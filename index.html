@@ -95,6 +95,10 @@
 
     .badge { font-size:11px; padding:2px 8px; border:1px solid var(--outline); border-radius:999px; color:var(--muted); }
 
+    /* Prevent scroll-jank during a touch drag */
+    .drag-active { touch-action: none; }
+    .card-sentence.dragging { cursor: grabbing; }
+
     /* --- Mobile stacking: put ✅/❌ below the text, hide drag handle --- */
     @media (max-width:600px){ 
       body{ font-size:16px; line-height:1.5 }
@@ -109,6 +113,7 @@
       }
       .drag{ display:none; }
       .counts{ justify-content:flex-start; }
+      .counts button { padding: 12px 16px; }
     }
   </style>
 </head>
@@ -241,8 +246,142 @@
     card.addEventListener('dragover', (e)=>{ e.preventDefault(); e.dataTransfer.dropEffect='move'; });
     card.addEventListener('drop', (e)=>{ e.preventDefault(); const from = dragSrcIdx; const to = state.order.indexOf(idx); moveCardByPosition(from, to); });
 
-    // Touch reorder
-    card.addEventListener('pointerdown', (ev)=>{ if(ev.pointerType !== 'touch') return; ev.preventDefault(); const container=$('#sentences'); const startY=ev.clientY; const cardRect=card.getBoundingClientRect(); const ghost=card.cloneNode(true); Object.assign(ghost.style,{opacity:'.7',position:'fixed',left:cardRect.left+'px',width:cardRect.width+'px',top:cardRect.top+'px',zIndex:1000}); document.body.appendChild(ghost); const placeholder=document.createElement('div'); placeholder.style.height=card.offsetHeight+'px'; placeholder.className='card-sentence'; placeholder.style.border='1px dashed var(--outline)'; card.style.visibility='hidden'; card.parentNode.insertBefore(placeholder, card.nextSibling); function onMove(e){ const dy=e.clientY-startY; ghost.style.top=(cardRect.top+dy)+'px'; const centerY=ghost.getBoundingClientRect().top+ghost.offsetHeight/2; const items=Array.from(container.children); let newPos=0; for(let i=0;i<items.length;i++){ const r=items[i].getBoundingClientRect(); if(centerY>r.top+r.height/2) newPos=i+1; } newPos=Math.min(newPos, items.length-1); if(items[newPos]!==placeholder){ container.insertBefore(placeholder, items[newPos]); } } function onUp(){ ghost.remove(); const items=Array.from(container.children); const newPos=items.indexOf(placeholder); placeholder.replaceWith(card); card.style.visibility=''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); moveCardByPosition(idx, newPos); } window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp, {once:true}); });
+    // Touch reorder (long-press, pointer capture, auto-scroll)
+card.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType !== 'touch') return;
+
+  // ignore taps on buttons/controls inside the card
+  if (ev.target.closest('button') || ev.target.closest('.counts')) return;
+
+  let pressTimer = null;
+  const startX = ev.clientX;
+  const startY = ev.clientY;
+  const container = $('#sentences');
+
+  // start only after a short long-press to avoid fighting with scroll
+  pressTimer = setTimeout(() => beginDrag(ev), 200);
+
+  function cancelPress() {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+    window.removeEventListener('pointermove', maybeCancel);
+    window.removeEventListener('pointerup', cancelPress, { once: true });
+  }
+
+  function maybeCancel(moveEv) {
+    // if finger moved too much before long-press -> treat as scroll, not drag
+    if (Math.abs(moveEv.clientY - startY) > 6 || Math.abs(moveEv.clientX - startX) > 6) cancelPress();
+  }
+
+  window.addEventListener('pointermove', maybeCancel, { passive: true });
+  window.addEventListener('pointerup', cancelPress, { once: true });
+
+  function beginDrag(startEv) {
+    // haptic nudge (supported on many mobiles)
+    if (navigator.vibrate) { try { navigator.vibrate(10); } catch {} }
+
+    document.body.classList.add('drag-active');
+    card.classList.add('dragging');
+    card.setPointerCapture?.(startEv.pointerId);
+
+    const cardRect = card.getBoundingClientRect();
+
+    // ghost preview
+    const ghost = card.cloneNode(true);
+    Object.assign(ghost.style, {
+      position: 'fixed',
+      left: cardRect.left + 'px',
+      top: cardRect.top + 'px',
+      width: cardRect.width + 'px',
+      pointerEvents: 'none',
+      opacity: '0.85',
+      transform: 'translate3d(0,0,0)',
+      zIndex: 1000
+    });
+    document.body.appendChild(ghost);
+
+    // placeholder keeps layout height
+    const placeholder = document.createElement('div');
+    placeholder.className = 'card-sentence';
+    placeholder.style.height = card.offsetHeight + 'px';
+    placeholder.style.border = '1px dashed var(--outline)';
+    card.style.visibility = 'hidden';
+    card.parentNode.insertBefore(placeholder, card.nextSibling);
+
+    let lastY = startEv.clientY;
+
+    // simple viewport-edge autoscroll
+    let scrolling = false, scrollRAF = null;
+    function autoScroll(y) {
+      const edge = 60;             // px from top/bottom
+      const speed = 12;            // px per frame
+      const viewH = window.innerHeight;
+      let dy = 0;
+      if (y < edge) dy = -speed;
+      else if (y > viewH - edge) dy = speed;
+
+      if (dy === 0) {
+        scrolling = false;
+        if (scrollRAF) cancelAnimationFrame(scrollRAF);
+        scrollRAF = null;
+        return;
+      }
+      if (!scrolling) {
+        scrolling = true;
+        const step = () => {
+          window.scrollBy(0, dy);
+          scrollRAF = requestAnimationFrame(step);
+        };
+        scrollRAF = requestAnimationFrame(step);
+      }
+    }
+
+    function onMove(e) {
+      e.preventDefault(); // stop page scroll during drag
+      lastY = e.clientY;
+      autoScroll(lastY);
+
+      const dy = e.clientY - startY;
+      ghost.style.transform = `translate3d(0, ${dy}px, 0)`;
+
+      // compute drop position by comparing ghost center with item centers
+      const centerY = ghost.getBoundingClientRect().top + ghost.offsetHeight / 2;
+      const items = Array.from(container.children);
+      let newPos = 0;
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i].getBoundingClientRect();
+        if (centerY > r.top + r.height / 2) newPos = i + 1;
+      }
+      newPos = Math.min(newPos, items.length - 1);
+      if (items[newPos] !== placeholder) {
+        container.insertBefore(placeholder, items[newPos]);
+      }
+    }
+
+    function onUp() {
+      // cleanup + commit
+      if (scrollRAF) cancelAnimationFrame(scrollRAF);
+      scrolling = false;
+      document.body.classList.remove('drag-active');
+      card.classList.remove('dragging');
+      ghost.remove();
+
+      const items = Array.from(container.children);
+      const newPos = items.indexOf(placeholder);
+      placeholder.replaceWith(card);
+      card.style.visibility = '';
+
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+
+      moveCardByPosition(idx, newPos);
+    }
+
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp, { once: true });
+  }
+});
+
 
     return card;
   }

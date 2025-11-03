@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Memoriser</title>
+  <title>Crammie</title>
   <link rel="icon" href="favicon.svg">
   <style>
     :root { --bg:#0b0f14; --card:#111827; --muted:#94a3b8; --text:#e5e7eb; --accent:#22d3ee; --ok:#22c55e; --bad:#ef4444; --outline:#334155; --soft:#1f2937; }
@@ -101,7 +101,7 @@
 </head>
 <body>
   <header>
-    <h1><a href="#" id="brandLink" aria-label="Toggle README">Memoriser</a></h1>
+    <h1><a href="#" id="brandLink" aria-label="Toggle README">Crammie</a></h1>
     <p>Import sentences under a label; practice by cut (3/2/1) and optional substitution (Off/30/50/90). ✅ auto-hides; tap a card to highlight in the textarea.</p>
     <p class="small muted" id="storageNote"></p>
   </header>
@@ -709,13 +709,13 @@
             }
             rd.style.display='block';
             main.style.display='none';
-            brand.textContent='← Memoriser';
+            brand.textContent='← Crammie';
             brand.setAttribute('aria-label','Back to app');
             setReadmeMode._on = true;
         } else {
             rd.style.display='none';
             main.style.display='grid';
-            brand.textContent='Memoriser';
+            brand.textContent='Crammie';
             brand.setAttribute('aria-label','Toggle README');
             setReadmeMode._on = false;
         }

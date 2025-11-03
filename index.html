@@ -275,11 +275,23 @@
   function shouldMask(seed, wordIndex, pct){ if(pct<=0) return false; const h = hash32(seed+'#'+wordIndex); return (h % 100) < pct; }
 
   function splitSentences(text){
-    const norm = text.trim().replace(/\r\n?/g, "\n");
-    if(norm.indexOf('\n') !== -1){ return norm.split(/\n+/).map(s=>s.trim()).filter(Boolean); }
-    const withBreaks = norm.replace(/([.!?])\s+/g, '$1\n');
-    return withBreaks.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  // Robust sentence splitting:
+  // - Treat *blank lines* as intentional separators.
+  // - Otherwise collapse single line breaks to spaces and split on . ! ?
+  // - No abbreviation guard (per your preference).
+  const norm = String(text||'').replace(/\r\n?/g,'\n').trim();
+  if(!norm) return [];
+  // If there are paragraph-style blank lines, use those as separators
+  if(/\n\s*\n/.test(norm)){
+    return norm.split(/\n\s*\n+/).map(s=>s.trim()).filter(Boolean);
   }
+  // Collapse single newlines (common when copying wrapped text)
+  const collapsed = norm.replace(/\n+/g,' ');
+  // Split by terminal punctuation . ! ? (ignore commas)
+  const withBreaks = collapsed.replace(/([.!?])\s+/g,'$1\n');
+  return withBreaks.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+}
+
 
   function applyCutAndSub(sentence, cutN, subPct, seed){
     if(!cutN) return sentence; let k=0;
@@ -488,7 +500,7 @@
   function resetCounts(){ state.progress={}; render(); }
   async function unhideAll(){ state.learned=new Set(); render(); }
 
-  
+
 
 
   function checkOrder() {

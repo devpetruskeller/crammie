@@ -1,4 +1,4 @@
-# Memoriser
+# Crammie
 
 A tiny web app to help you memorise text by progressively **cutting** words (keep first 3/2/1 letters), optionally **substituting** parts with underscores, then **scrambling** and **reordering** sentences while you track progress.
 

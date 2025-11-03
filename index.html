@@ -35,7 +35,6 @@
 
     .sentence-list { min-height:180px; display:grid; gap:8px; }
 
-    /* --- Card layout with grid areas --- */
     .card-sentence { 
       display:grid; 
       grid-template-columns:auto 1fr auto; 
@@ -71,10 +70,8 @@
 
     .badge { font-size:11px; padding:2px 8px; border:1px solid var(--outline); border-radius:999px; color:var(--muted); }
 
-    /* Prevent scroll-jank during a touch drag */
     .drag-active { touch-action: none; }
 
-    /* --- Mobile stacking: put ✅/❌ below the text, hide drag handle --- */
     @media (max-width:600px){ 
       body{ font-size:16px; line-height:1.5 }
       textarea{ min-height:220px }
@@ -90,6 +87,14 @@
       .counts{ justify-content:flex-start; }
       .counts button { padding:12px 16px; }
     }
+
+    details.menu { position:relative; }
+    details.menu > summary { list-style:none; cursor:pointer; }
+    details.menu > summary::-webkit-details-marker{ display:none; }
+    details.menu[open] > summary { outline: 2px solid var(--accent); border-radius:999px; }
+    .menu-sheet { position:absolute; top:120%; left:0; background:#0f1623; border:1px solid var(--outline); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:6px; min-width:180px; z-index:10 }
+    .menu-sheet button { width:100%; text-align:left; border-radius:8px; padding:8px 10px; }
+    .menu-sheet button[disabled]{ opacity:.45 }
   </style>
 </head>
 <body>
@@ -101,7 +106,6 @@
 
   <main class="container">
     <section class="card" id="inputCard">
-      <!-- TOP: New Label UX: dropdown + New Label; inline input appears only when creating -->
       <div class="row" id="labelRow">
         <div class="pill" id="labelInputWrap" style="display:none">
           <label for="labelInput">New label</label>
@@ -114,7 +118,15 @@
             <option value="" disabled selected>Select a label</option>
           </select>
         </div>
-        <button id="btnNewLabel">New Label</button>
+        <details class="menu pill" id="manageMenu">
+          <summary>Manage ▾</summary>
+          <div class="menu-sheet" role="menu">
+            <button type="button" data-act="new">New</button>
+            <button type="button" data-act="rename" id="mRename" disabled>Rename</button>
+            <button type="button" data-act="copy" id="mCopy">Copy Progress (CSV)</button>
+            <button type="button" data-act="delete" id="mDelete" disabled>Delete</button>
+          </div>
+        </details>
         <button id="btnGenerate" disabled>Generate</button>
       </div>
 
@@ -125,7 +137,6 @@
 
       <div class="divider"></div>
 
-      <!-- BELOW TEXTAREA: configuration strip -->
       <div class="row" style="row-gap:8px">
         <span class="pill">Cut:
           <label><input type="radio" name="cut" value="3" checked> 3</label>
@@ -149,8 +160,6 @@
         <button id="btnCheckOrder" class="btn-ghost">Check order</button>
         <button id="btnResetCounts" class="btn-ghost">Reset counts</button>
         <button id="btnUnhideAll" class="btn-ghost">Unhide all</button>
-        <button id="btnClearSession" class="btn-ghost">Clear session</button>
-        <button id="btnExportCSV" class="btn-ghost">Copy progress (CSV)</button>
         <span class="spacer"></span>
         <span class="hint">Shortcuts: <span class="kbd">Enter</span>=✅ <span class="kbd">Backspace</span>=❌ <span class="kbd">↑/↓</span>=focus <span class="kbd">S</span>=scramble <span class="kbd">R</span>=reset</span>
       </div>
@@ -172,10 +181,8 @@
     </section>
   </main>
 
-  <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>
-  // Telegram theme + setup (no optional chaining for older webviews)
   (function(){
     var W = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
     if(!W) return;
@@ -195,94 +202,110 @@
   const $$ = sel => Array.from(document.querySelectorAll(sel));
   const clamp = (n,min,max)=> Math.max(min, Math.min(max, n));
 
-  // --- Storage layer: CloudStorage when possible, else localStorage ---
   const TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
   const TG_VER = (function(){
     var v = 0; try { v = parseFloat((TG && (TG.version || TG.platformVersion)) || '0'); } catch(e) {}
     return isNaN(v) ? 0 : v;
   })();
-  // Guard: only consider CloudStorage usable on recent versions
   const CS = (TG && TG.CloudStorage && TG_VER >= 6.9) ? TG.CloudStorage : null;
-  const KEY_BASE = 'm:v7';
+  const KEY_BASE = 'memoriser:v1';
   const CHUNK = 3500;
 
   const storage = {
+    // Write-through: always try localStorage; also try Telegram CloudStorage when available.
     async saveState(obj){
       const json = JSON.stringify(obj);
-      if(!CS){ try{ localStorage.setItem(KEY_BASE, json); }catch(e){} return true; }
-      try{
-        const parts = Math.ceil(json.length / CHUNK);
-        await new Promise(res=> { try{ CS.setItem(KEY_BASE+':index', String(parts), ()=>res(true)); } catch(e){ res(false); } });
-        const promises = [];
-        for(let i=0;i<parts;i++){
-          const slice = json.slice(i*CHUNK, (i+1)*CHUNK);
-          promises.push(new Promise(res=> { try{ CS.setItem(KEY_BASE+':'+i, slice, ()=>res(true)); } catch(e){ res(false); } }));
-        }
-        await Promise.all(promises);
+      let lsOK = false, csOK = false;
+      // LocalStorage first
+      try { localStorage.setItem(KEY_BASE, json); lsOK = true; } catch(e){ console.warn('localStorage save failed', e); }
+      // Telegram CloudStorage
+      if(CS){
         try{
-          await new Promise(res=> { try{ CS.getKeys(function(keys){
-            (keys||[]).filter(function(k){ return k.indexOf(KEY_BASE+':')===0 && k.indexOf(':index')===-1 && Number(k.split(':').pop())>=parts; })
-              .forEach(function(k){ try{ CS.removeItem(k, function(){}); }catch(e){} });
-            res(true);
-          }); } catch(e){ res(false); } });
-        }catch(e){}
-        return true;
-      }catch(err){
-        try{ localStorage.setItem(KEY_BASE, json); }catch(e){}
-        return true;
+          const parts = Math.ceil(json.length / CHUNK);
+          await new Promise(res=> { try{ CS.setItem(KEY_BASE+':index', String(parts), ()=>res(true)); } catch(e){ res(false); } });
+          const promises = [];
+          for(let i=0;i<parts;i++){
+            const slice = json.slice(i*CHUNK, (i+1)*CHUNK);
+            promises.push(new Promise(res=> { try{ CS.setItem(KEY_BASE+':'+i, slice, ()=>res(true)); } catch(e){ res(false); } }));
+          }
+          await Promise.all(promises);
+          csOK = true;
+          try{
+            await new Promise(res=> { try{ CS.getKeys(function(keys){
+              (keys||[]).filter(function(k){ return k.indexOf(KEY_BASE+':')===0 && k.indexOf(':index')===-1 && Number(k.split(':').pop())>=parts; })
+                .forEach(function(k){ try{ CS.removeItem(k, function(){}); }catch(e){} });
+              res(true);
+            }); } catch(e){ res(false); } });
+          }catch(e){}
+        }catch(err){ console.warn('CloudStorage save failed', err); }
       }
+      try{ const note = document.getElementById('storageNote'); if(note){ note.textContent = 'Storage: '+(CS?('Telegram CloudStorage'+(csOK?' ✓':' ✕')):'Local storage')+'; Local '+(lsOK?'✓':'✕')+' at '+new Date().toLocaleTimeString(); } }catch(e){}
+      return (lsOK || csOK);
     },
     async loadState(){
-      if(!CS){ try{ var raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }catch(e){ return null; } }
-      try{
-        const idxStr = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':index', v=>res(v)); } catch(e){ res(null); } });
-        if(!idxStr){ return null; }
-        const parts = parseInt(idxStr,10) || 0; if(!parts) return null;
-        const chunks = [];
-        for(let i=0;i<parts;i++){
-          const c = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':'+i, v=>res(v||'')); } catch(e){ res(''); } });
-          chunks.push(c);
-        }
-        try{ return JSON.parse(chunks.join('')); }catch(e){ return null; }
-      }catch(err){
-        try{ var raw2 = localStorage.getItem(KEY_BASE); return raw2? JSON.parse(raw2): null; }catch(e){ return null; }
+      if(CS){
+        try{
+          const idxStr = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':index', v=>res(v)); } catch(e){ res(null); } });
+          if(idxStr){
+            const parts = parseInt(idxStr,10) || 0;
+            const chunks = [];
+            for(let i=0;i<parts;i++){
+              const c = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':'+i, v=>res(v||'')); } catch(e){ res(''); } });
+              chunks.push(c);
+            }
+            try{ const parsed = JSON.parse(chunks.join('')); if(parsed) return parsed; }catch(e){ console.warn('CloudStorage parse failed', e); }
+          }
+        }catch(err){ console.warn('CloudStorage load failed', err); }
       }
-    },
-    async clearState(){
-      if(!CS){ try{ localStorage.removeItem(KEY_BASE); }catch(e){} return true; }
-      try{
-        const keys = await new Promise(res=> { try{ CS.getKeys(k=>res(k||[])); } catch(e){ res([]); } });
-        const targets = keys.filter(k=> k===KEY_BASE || k.indexOf(KEY_BASE+':')===0);
-        await Promise.all(targets.map(k=> new Promise(res=> { try{ CS.removeItem(k, ()=>res(true)); } catch(e){ res(true); } })));
-        return true;
-      }catch(err){ try{ localStorage.removeItem(KEY_BASE); }catch(e){} return true; }
+      try{ const raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }catch(e){ console.warn('localStorage load failed', e); return null; }
     }
   };
 
-  // hashing to make substitution deterministic per sentence/label
   function hash32(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h, 16777619);} return h>>>0; }
   function shouldMask(seed, wordIndex, pct){ if(pct<=0) return false; const h = hash32(seed+'#'+wordIndex); return (h % 100) < pct; }
 
   function splitSentences(text){
     const norm = text.trim().replace(/\r\n?/g, "\n");
+    if(norm.indexOf('\n') !== -1){ return norm.split(/\n+/).map(s=>s.trim()).filter(Boolean); }
     const withBreaks = norm.replace(/([.!?])\s+/g, '$1\n');
     return withBreaks.split(/\n+/).map(s=>s.trim()).filter(Boolean);
   }
 
   function applyCutAndSub(sentence, cutN, subPct, seed){
     if(!cutN) return sentence; let k=0;
-    return sentence.replace(/([A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*)([^\sA-Za-zÀ-ÖØ-öÿ]*)/g, function(full, w, t){
+    return sentence.replace(/([A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*)([^\sA-Za-zÀ-ÖØ-öø-ÿ]*)/g, function(full, w, t){
       var cut = (w.length<=cutN? w : w.slice(0, cutN));
       if(subPct>0 && shouldMask(seed, k++, subPct)) cut = '_';
       return cut + t;
     });
   }
 
-  // Data model
   let state = {
     sentences:[], labels:[], sentenceLabel:[], order:[], learned:new Set(), progress:{},
     cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', newLabelMode:false, undoStack:[],
   };
+
+  function snapshot(){
+    return {
+      sentences: state.sentences.slice(),
+      labels: state.labels.slice(),
+      sentenceLabel: state.sentenceLabel.slice(),
+      order: state.order.slice(),
+      learned: Array.from(state.learned),
+      progress: JSON.parse(JSON.stringify(state.progress)),
+      selectedLabel: state.selectedLabel
+    };
+  }
+  function pushUndo(){ state.undoStack.push(snapshot()); }
+  function applySnapshot(s){
+    state.sentences = s.sentences.slice();
+    state.labels = s.labels.slice();
+    state.sentenceLabel = s.sentenceLabel.slice();
+    state.order = s.order.slice();
+    state.learned = new Set(s.learned);
+    state.progress = JSON.parse(JSON.stringify(s.progress));
+    state.selectedLabel = s.selectedLabel || '';
+  }
 
   async function persist(){
     const payload = {
@@ -301,21 +324,30 @@
     storage.saveState(payload);
   }
 
-  async function load(){
-    const p = await storage.loadState(); if(!p) return;
-    try{
-      state.sentences = p.sentences||[];
-      state.labels = p.labels||[];
-      state.sentenceLabel = p.sentenceLabel||[];
-      state.order = Array.isArray(p.order)? p.order : state.sentences.map(function(_,i){return i;});
-      state.learned = new Set(p.learned||[]);
-      state.progress = p.progress||{};
-      state.cut = [1,2,3].indexOf(p.cut)>=0? p.cut:3;
-      state.subPct = [0,30,50,90].indexOf(p.subPct)>=0? p.subPct:0;
-      state.struggleOnly = !!p.struggleOnly;
-      state.struggleN = (Number.isFinite && Number.isFinite(p.struggleN))? p.struggleN:1;
-      state.selectedLabel = p.selectedLabel || '';
-    }catch(e){ console.warn('load failed', e); }
+  function renderLearned(i){
+    const d=document.createElement('div'); d.className='card-sentence'; d.innerHTML='<div class="text">'+applyCutAndSub(state.sentences[i], state.cut, state.subPct, state.sentenceLabel[i]+'|'+i+'|'+state.subPct)+'</div><div class="progress"><i style="width:100%"></i></div>';
+    return d;
+  }
+
+  function render(){
+    const list=$('#sentences'); list.innerHTML=''; const learnedList=$('#learnedList'); learnedList.innerHTML='';
+    const filter=state.selectedLabel;
+    const visibleIdxs=state.order.filter(function(i){ return filter && !state.learned.has(i) && state.sentenceLabel[i]===filter; });
+    const learnedIdxs=state.order.filter(function(i){ return filter && state.learned.has(i) && state.sentenceLabel[i]===filter; });
+
+    let any=false; for(const i of visibleIdxs){ if(state.struggleOnly && ((state.progress[i] && state.progress[i].bad)||0) < state.struggleN) continue; any=true; list.appendChild(displaySentence(i)); }
+    const empty = $('#emptyState');
+    if(any){ empty.style.display='none'; }
+    else {
+      empty.style.display='block';
+      empty.textContent = state.struggleOnly ? 'No cards match the current filter (Show only struggling). Try unchecking it or lowering the threshold.' : 'Choose a label above or import sentences to begin.';
+      // If user has chosen a label but filter hides all, auto-disable struggling-only once so they see cards
+      if(state.selectedLabel && state.struggleOnly){ state.struggleOnly=false; const cb=$('#toggleStruggle'); if(cb) cb.checked=false; setTimeout(render,0); }
+    }
+
+    for(const i of learnedIdxs){ learnedList.appendChild(renderLearned(i)); }
+    $('#learnedCount').textContent = learnedIdxs.length; $('#cutNote').textContent = state.cut===1? '(Progress mode)':'(Progress best at cut = 1)';
+    persist();
   }
 
   function ensureLabel(name){ if(!name) return; if(state.labels.indexOf(name)===-1) state.labels.push(name); buildLabelDropdown(); }
@@ -326,6 +358,7 @@
     sel.innerHTML = (state.labels.length ? '' : '<option value="" disabled selected>Select a label</option>') + state.labels.map(function(L){return '<option value="'+L.replace(/\"/g,'&quot;')+'">'+L+'</option>';}).join('');
     sel.value = (prev && state.labels.indexOf(prev)>=0) ? prev : (state.labels[0]||'');
     state.selectedLabel = sel.value || '';
+    updateManageButtons();
   }
 
   function populateTextareaForLabel(label){
@@ -351,6 +384,44 @@
     if(/Mobi|Android/i.test(navigator.userAgent)){ ta.blur(); ta.focus(); }
   }
 
+  function updateManageButtons(){
+    var has = !!state.selectedLabel;
+    ['mRename','mDelete'].forEach(function(id){ var el=$('#'+id); if(el) el.disabled = !has; });
+  }
+
+  function renameLabel(oldName, newName){
+    newName = (newName||'').trim(); if(!newName) return false;
+    if(state.labels.indexOf(newName)>=0){ alert('Label "'+newName+'" already exists.'); return false; }
+    pushUndo();
+    var i = state.labels.indexOf(oldName); if(i>=0) state.labels[i] = newName;
+    state.sentenceLabel = state.sentenceLabel.map(function(L){ return L===oldName ? newName : L; });
+    if(state.selectedLabel===oldName) state.selectedLabel = newName;
+    buildLabelDropdown();
+    populateTextareaForLabel(state.selectedLabel);
+    render();
+    return true;
+  }
+
+  function deleteLabel(label){
+    if(!label) return; const toRemove = []; for(let i=0;i<state.sentences.length;i++){ if(state.sentenceLabel[i]===label) toRemove.push(i); }
+    if(!toRemove.length){ alert('Nothing to delete.'); return; }
+    if(!confirm('Delete label "'+label+'" and its '+toRemove.length+' sentences? This can be undone.')) return;
+    pushUndo();
+    const toKeep = []; const map = {};
+    for(let i=0;i<state.sentences.length;i++){ if(toRemove.indexOf(i)===-1){ map[i]=toKeep.length; toKeep.push(i); } }
+    state.sentences = toKeep.map(function(i){ return state.sentences[i]; });
+    state.sentenceLabel = toKeep.map(function(i){ return state.sentenceLabel[i]; });
+    state.order = state.order.filter(function(i){ return toRemove.indexOf(i)===-1; }).map(function(i){ return map[i]; });
+    const progNew = {}; for(const oldIdx in state.progress){ const oi=parseInt(oldIdx,10); if(toRemove.indexOf(oi)===-1){ progNew[ map[oi] ] = state.progress[oi]; } }
+    state.progress = progNew;
+    state.learned = new Set(Array.from(state.learned).filter(function(i){ return toRemove.indexOf(i)===-1; }).map(function(i){ return map[i]; }));
+    state.labels = state.labels.filter(function(L){ return L!==label; });
+    state.selectedLabel = state.labels[0] || '';
+    buildLabelDropdown();
+    populateTextareaForLabel(state.selectedLabel);
+    render();
+  }
+
   function displaySentence(idx){
     const label = state.sentenceLabel[idx] || '';
     const seed = label+'|'+idx+'|'+state.subPct;
@@ -372,13 +443,11 @@
     card.addEventListener('click', function(e){ if(e.target.closest('button')||e.target.closest('.counts')) return; showLabelSourceAndSelectSentence(idx); });
     card.tabIndex=0; card.addEventListener('focus', function(){ $$('.card-sentence').forEach(function(x){x.classList.remove('focused');}); card.classList.add('focused'); });
 
-    // Desktop DnD
     card.addEventListener('dragstart', function(e){ dragSrcIdx = idx; card.classList.add('ghost'); e.dataTransfer.effectAllowed='move'; });
     card.addEventListener('dragend', function(){ card.classList.remove('ghost'); });
     card.addEventListener('dragover', function(e){ e.preventDefault(); e.dataTransfer.dropEffect='move'; });
     card.addEventListener('drop', function(e){ e.preventDefault(); const from = dragSrcIdx; const to = state.order.indexOf(idx); moveCardByPosition(from, to); });
 
-    // Touch reorder (long-press, pointer capture, auto-scroll)
     card.addEventListener('pointerdown', function(ev){
       if (ev.pointerType !== 'touch') return;
       if (ev.target.closest('button') || ev.target.closest('.counts')) return;
@@ -402,23 +471,6 @@
     return card;
   }
 
-  function render(){
-    const list=$('#sentences'); list.innerHTML=''; const learnedList=$('#learnedList'); learnedList.innerHTML='';
-    const filter=state.selectedLabel;
-    const visibleIdxs=state.order.filter(function(i){ return filter && !state.learned.has(i) && state.sentenceLabel[i]===filter; });
-    const learnedIdxs=state.order.filter(function(i){ return filter && state.learned.has(i) && state.sentenceLabel[i]===filter; });
-
-    let any=false; for(const i of visibleIdxs){ if(state.struggleOnly && ((state.progress[i] && state.progress[i].bad)||0) < state.struggleN) continue; any=true; list.appendChild(displaySentence(i)); }
-    $('#emptyState').style.display = any? 'none':'block';
-    for(const i of learnedIdxs){ learnedList.appendChild(renderLearned(i)); }
-    $('#learnedCount').textContent = learnedIdxs.length; $('#cutNote').textContent = state.cut===1? '(Progress mode)':'(Progress best at cut = 1)';
-    buildLabelDropdown();
-    persist();
-  }
-
-  function renderLearned(idx){ const label=state.sentenceLabel[idx]||''; const wrap=document.createElement('div'); wrap.className='card-sentence'; wrap.style.opacity=.85; const t=document.createElement('div'); t.className='text'; t.textContent=applyCutAndSub(state.sentences[idx], state.cut, state.subPct, label+'|'+idx+'|'+state.subPct); const counts=document.createElement('div'); counts.className='counts'; const p=state.progress[idx]||{ok:0,bad:0}; counts.innerHTML='<span class="badge">'+(label||'Label')+'</span> <span class="ok">✅('+(p.ok)+')</span><span class="bad">❌('+(p.bad)+')</span>'; const unhide=document.createElement('button'); unhide.textContent='Unhide'; unhide.className='btn btn-ghost'; unhide.addEventListener('click', function(){ state.learned.delete(idx); render(); }); wrap.appendChild(document.createTextNode('✔')); wrap.appendChild(t); wrap.appendChild(counts); wrap.appendChild(unhide); const bar=document.createElement('div'); bar.className='progress'; var pct = (p.ok + p.bad) ? (p.ok/(p.ok+p.bad))*100 : 0; bar.innerHTML='<i style="width:'+pct+'%"></i>'; wrap.appendChild(bar); wrap.addEventListener('click', function(e){ if(e.target.closest('button')) return; showLabelSourceAndSelectSentence(idx); }); return wrap; }
-
-  // Actions
   let dragSrcIdx=null;
   function moveCardByPosition(fromSentenceIdx, toPosition){ const curPos=state.order.indexOf(fromSentenceIdx); if(curPos<0||toPosition<0) return; const arr=state.order.slice(); arr.splice(curPos,1); arr.splice(toPosition,0,fromSentenceIdx); state.order=arr; render(); }
   function markOk(idx){ const p=state.progress[idx]||(state.progress[idx]={ok:0,bad:0}); p.ok++; state.learned.add(idx); render(); }
@@ -426,64 +478,9 @@
   function resetOrder(){ state.order=state.sentences.map(function(_,i){return i;}); render(); }
   function resetCounts(){ state.progress={}; render(); }
   async function unhideAll(){ state.learned=new Set(); render(); }
-  async function clearSession(){ await storage.clearState(); state={ sentences:[], labels:[], sentenceLabel:[], order:[], learned:new Set(), progress:{}, cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', newLabelMode:false, undoStack:[] }; buildLabelDropdown(); populateTextareaForLabel(''); render(); }
   function checkOrder(){ const cards=$$('#sentences .card-sentence'); cards.forEach(function(card, pos){ const idx=Number(card.dataset.idx); const ok=idx===pos; card.style.outline = ok? '2px solid rgba(34,197,94,.6)' : '2px solid rgba(239,68,68,.4)'; }); setTimeout(function(){ cards.forEach(function(c){ c.style.outline=''; }); }, 1200); }
   function copyCSV(){ const rows=[['index','sentence','label','cut','subPct','ok','bad','learned']]; state.sentences.forEach(function(s,i){ const p=state.progress[i]||{ok:0,bad:0}; rows.push([i, s.replace(/\n/g,' '), state.sentenceLabel[i]||'', state.cut, state.subPct, p.ok, p.bad, state.learned.has(i)?1:0]); }); const csv=rows.map(function(r){return r.map(function(cell){ return '"'+String(cell).replace(/\"/g,'\"\"')+'"'; }).join(',');}).join('\n'); if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(csv).then(function(){ alert('Progress copied to clipboard as CSV.'); }).catch(fallback);} else { fallback(); } function fallback(){ const ta=document.createElement('textarea'); ta.value=csv; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); alert('Progress copied to clipboard as CSV.'); }catch(e){ alert('Copy failed. Select text manually.'); } ta.remove(); } }
 
-  // Import flow (Generate saves; New Label just toggles UI)
-  $('#btnGenerate').addEventListener('click', function(){
-    var isNew = !!state.newLabelMode;
-    var label = isNew ? (($('#labelInput').value)||'').trim() : (($('#labelFilter').value)||'').trim();
-    var t = (($('#text').value)||'').trim();
-    if(!label){ alert('Please enter a label.'); return; }
-    if(!t){ alert('Please paste some text.'); return; }
-    var parts = splitSentences(t);
-    if(!parts.length){ alert('No sentences found.'); return; }
-    ensureLabel(label);
-    var baseLen=state.sentences.length;
-    for(var i=0;i<parts.length;i++){ state.sentences.push(parts[i]); state.sentenceLabel.push(label); }
-    state.order = state.order.concat(parts.map(function(_,i){return baseLen + i;}));
-    state.selectedLabel = label;
-    buildLabelDropdown();
-    render();
-    populateTextareaForLabel(label);
-    if(isNew){ setNewLabelMode(false); $('#labelInput').value=''; }
-    updateGenerateEnabled();
-  });
-
-  // Controls
-  $$('#inputCard input[name="cut"]').forEach(function(r){ r.addEventListener('change', function(){ state.cut=Number(document.querySelector('input[name="cut"]:checked').value); render(); }); });
-  $$('#inputCard input[name="sub"]').forEach(function(r){ r.addEventListener('change', function(){ state.subPct=Number(document.querySelector('input[name="sub"]:checked').value); render(); }); });
-  $('#btnScramble').addEventListener('click', function(){ const arr=state.order.slice(); for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; } state.order=arr; render(); });
-  $('#btnResetOrder').addEventListener('click', resetOrder);
-  $('#btnResetCounts').addEventListener('click', resetCounts);
-  $('#btnUnhideAll').addEventListener('click', unhideAll);
-  $('#btnClearSession').addEventListener('click', clearSession);
-  $('#btnCheckOrder').addEventListener('click', checkOrder);
-  $('#btnExportCSV').addEventListener('click', copyCSV);
-  $('#labelFilter').addEventListener('change', function(e){ state.selectedLabel=e.target.value; render(); populateTextareaForLabel(state.selectedLabel); updateGenerateEnabled(); });
-  $('#toggleStruggle').addEventListener('change', function(e){ state.struggleOnly=e.target.checked; render(); });
-  $('#struggleN').addEventListener('change', function(e){ state.struggleN=clamp(parseInt(e.target.value||'1',10),1,999); render(); });
-
-  // New Label UX
-  function setNewLabelMode(on){
-    state.newLabelMode = !!on;
-    $('#labelInputWrap').style.display = on ? '' : 'none';
-    $('#labelDropdownWrap').style.display = on ? 'none' : '';
-    $('#btnCancelNew').style.display = on ? '' : 'none';
-    $('#btnNewLabel').style.display = on ? 'none' : '';
-    if(on){ $('#text').value=''; $('#labelInput').value=''; $('#labelInput').focus(); }
-    else { populateTextareaForLabel(state.selectedLabel); }
-    updateGenerateEnabled();
-  }
-  $('#btnNewLabel').addEventListener('click', function(){ setNewLabelMode(true); });
-  $('#btnCancelNew').addEventListener('click', function(){ setNewLabelMode(false); });
-
-  // Live-enable Generate as user types/selects
-  $('#text').addEventListener('input', updateGenerateEnabled);
-  document.addEventListener('input', function(e){ if(e.target && e.target.id==='labelInput'){ updateGenerateEnabled(); } });
-
-  // Helpers to validate Generate availability
   function currentLabelCandidate(){ return state.newLabelMode ? (($('#labelInput').value)||'').trim() : (($('#labelFilter').value)||'').trim(); }
   function updateGenerateEnabled(){
     var hasLabel = !!currentLabelCandidate();
@@ -493,9 +490,129 @@
     if(btn){ btn.disabled = dis; btn.title = dis ? 'Enter a label and paste text' : ''; }
   }
 
-  // Boot
+  // Replace-on-Generate with graceful NEW→EXISTING fallback
+  $('#btnGenerate').addEventListener('click', function(){
+    var isNew = !!state.newLabelMode;
+    var label = currentLabelCandidate();
+    var t = (($('#text').value)||'').trim();
+    if(!label){ alert('Please enter a label.'); return; }
+    if(!t){ alert('Please paste some text.'); return; }
+    var parts = splitSentences(t);
+    if(!parts.length){ alert('No sentences found.'); return; }
+
+    if(isNew && state.labels.indexOf(label) !== -1){
+      setNewLabelMode(false);
+      state.selectedLabel = label;
+      isNew = false;
+    }
+
+    if(isNew){
+      ensureLabel(label);
+      var baseNew = state.sentences.length;
+      for(var i=0;i<parts.length;i++){ state.sentences.push(parts[i]); state.sentenceLabel.push(label); }
+      state.order = state.order.concat(parts.map(function(_,i){return baseNew + i;}));
+      state.selectedLabel = label;
+      buildLabelDropdown();
+      render();
+      populateTextareaForLabel(label);
+      setNewLabelMode(false);
+      $('#labelInput').value='';
+      updateGenerateEnabled();
+      return;
+    }
+
+    var oldLabel = label;
+    var toRemove = [];
+    for(var j=0;j<state.sentences.length;j++){ if(state.sentenceLabel[j]===oldLabel) toRemove.push(j); }
+
+    pushUndo();
+
+    var toKeep = []; var map = {};
+    for(var k=0;k<state.sentences.length;k++){ if(toRemove.indexOf(k)===-1){ map[k] = toKeep.length; toKeep.push(k); } }
+
+    var keptSentences = toKeep.map(function(i){ return state.sentences[i]; });
+    var keptLabels    = toKeep.map(function(i){ return state.sentenceLabel[i]; });
+
+    state.order = state.order.filter(function(i){ return toRemove.indexOf(i)===-1; }).map(function(i){ return map[i]; });
+    var progNew = {}; for(var key in state.progress){ if(Object.prototype.hasOwnProperty.call(state.progress,key)){ var oi=parseInt(key,10); if(toRemove.indexOf(oi)===-1){ progNew[ map[oi] ] = state.progress[key]; } } }
+    state.progress = progNew;
+    state.learned = new Set(Array.from(state.learned).filter(function(i){ return toRemove.indexOf(i)===-1; }).map(function(i){ return map[i]; }));
+
+    var base = keptSentences.length;
+    for(var p=0;p<parts.length;p++){ keptSentences.push(parts[p]); keptLabels.push(oldLabel); }
+
+    state.sentences = keptSentences;
+    state.sentenceLabel = keptLabels;
+    state.order = state.order.concat(parts.map(function(_,i){ return base + i; }));
+
+    state.selectedLabel = oldLabel;
+    buildLabelDropdown();
+    render();
+    populateTextareaForLabel(oldLabel);
+    updateGenerateEnabled();
+    var practice = document.getElementById('practiceCard'); if(practice && practice.scrollIntoView){ practice.scrollIntoView({behavior:'smooth', block:'start'}); }
+  });
+
+  $$('#inputCard input[name="cut"]').forEach(function(r){ r.addEventListener('change', function(){ state.cut=Number(document.querySelector('input[name="cut"]:checked').value); render(); }); });
+  $$('#inputCard input[name="sub"]').forEach(function(r){ r.addEventListener('change', function(){ state.subPct=Number(document.querySelector('input[name="sub"]:checked').value); render(); }); });
+  $('#btnScramble').addEventListener('click', function(){ const arr=state.order.slice(); for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; } state.order=arr; render(); });
+  $('#btnResetOrder').addEventListener('click', resetOrder);
+  $('#btnResetCounts').addEventListener('click', resetCounts);
+  $('#btnUnhideAll').addEventListener('click', unhideAll);
+  $('#btnCheckOrder').addEventListener('click', checkOrder);
+  $('#labelFilter').addEventListener('change', function(e){ state.selectedLabel=e.target.value; render(); populateTextareaForLabel(state.selectedLabel); updateGenerateEnabled(); updateManageButtons(); });
+  $('#toggleStruggle').addEventListener('change', function(e){ state.struggleOnly=e.target.checked; render(); });
+  $('#struggleN').addEventListener('change', function(e){ state.struggleN=clamp(parseInt(e.target.value||'1',10),1,999); render(); });
+
+  $('#manageMenu').addEventListener('click', function(e){
+    const btn = e.target.closest('button'); if(!btn) return;
+    const act = btn.getAttribute('data-act');
+    if(act==='new') { setNewLabelMode(true); }
+    if(act==='rename'){
+      if(!state.selectedLabel) return; const nn = prompt('Rename label \"'+state.selectedLabel+'\" to:'); if(nn && nn.trim()) renameLabel(state.selectedLabel, nn.trim());
+    }
+    if(act==='copy'){
+      copyCSV();
+    }
+    if(act==='delete'){
+      if(!state.selectedLabel) return; deleteLabel(state.selectedLabel);
+    }
+    document.getElementById('manageMenu').open = false;
+  });
+
+  function setNewLabelMode(on){
+    state.newLabelMode = !!on;
+    $('#labelInputWrap').style.display = on ? '' : 'none';
+    $('#labelDropdownWrap').style.display = on ? 'none' : '';
+    $('#btnCancelNew').style.display = on ? '' : 'none';
+    if(on){ $('#text').value=''; $('#labelInput').value=''; $('#labelInput').focus(); }
+    else { populateTextareaForLabel(state.selectedLabel); }
+    updateGenerateEnabled();
+  }
+  $('#btnCancelNew').addEventListener('click', function(){ setNewLabelMode(false); });
+
+  $('#btnUndo').addEventListener('click', function(){ const s=state.undoStack.pop(); if(!s){ alert('Nothing to undo.'); return; } applySnapshot(s); render(); populateTextareaForLabel(state.selectedLabel); updateManageButtons(); });
+
+  $('#text').addEventListener('input', updateGenerateEnabled);
+  document.addEventListener('input', function(e){ if(e.target && e.target.id==='labelInput'){ updateGenerateEnabled(); } });
+
   (async function boot(){
-    await load();
+    const p = await storage.loadState();
+    if(p){
+      try{
+        state.sentences = p.sentences||[];
+        state.labels = p.labels||[];
+        state.sentenceLabel = p.sentenceLabel||[];
+        state.order = Array.isArray(p.order)? p.order : state.sentences.map(function(_,i){return i;});
+        state.learned = new Set(p.learned||[]);
+        state.progress = p.progress||{};
+        state.cut = [1,2,3].indexOf(p.cut)>=0? p.cut:3;
+        state.subPct = [0,30,50,90].indexOf(p.subPct)>=0? p.subPct:0;
+        state.struggleOnly = !!p.struggleOnly;
+        state.struggleN = (Number.isFinite && Number.isFinite(p.struggleN))? p.struggleN:1;
+        state.selectedLabel = p.selectedLabel || '';
+      }catch(e){ console.warn('load parse failed', e); }
+    }
     if([1,2,3].indexOf(state.cut)>=0){ var r = document.querySelector('input[name="cut"][value="'+state.cut+'"]'); if(r) r.checked=true; }
     if([0,30,50,90].indexOf(state.subPct)>=0){ var r2 = document.querySelector('input[name="sub"][value="'+state.subPct+'"]'); if(r2) r2.checked=true; }
     buildLabelDropdown();
@@ -503,7 +620,6 @@
     setNewLabelMode(false);
     render();
     updateGenerateEnabled();
-    // Show storage mode to the user
     var note = document.getElementById('storageNote');
     if(note){
       var mode = CS ? ('Telegram CloudStorage (v'+TG_VER.toFixed(1)+')') : 'Local storage on this device';

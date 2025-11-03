@@ -22,6 +22,7 @@
     textarea { width:100%; min-height:200px; resize:vertical; background:#0f1623; color:var(--text); border:1px solid var(--outline); border-radius:10px; padding:10px; }
     button,.btn { border:1px solid var(--outline); background:#0f1623; color:var(--text); padding:8px 10px; border-radius:10px; cursor:pointer; min-height:44px }
     button:hover { border-color:var(--accent) }
+    button:disabled{ opacity:.5; cursor:not-allowed; border-color:var(--outline) }
     .btn-ghost { background:transparent }
     .btn-ok { border-color: rgba(34,197,94,.4) }
     .btn-bad { border-color: rgba(239,68,68,.4) }
@@ -95,23 +96,26 @@
   <header>
     <h1>Memoriser</h1>
     <p>Import sentences under a label; practice by cut (3/2/1) and optional substitution (Off/30/50/90). ✅ auto-hides; tap a card to highlight in the textarea.</p>
+    <p class="small muted" id="storageNote"></p>
   </header>
 
   <main class="container">
     <section class="card" id="inputCard">
-      <!-- TOP: label input + label dropdown above textarea -->
-      <div class="row">
-        <div class="pill">
-          <label for="labelInput">Label for new import</label>
+      <!-- TOP: New Label UX: dropdown + New Label; inline input appears only when creating -->
+      <div class="row" id="labelRow">
+        <div class="pill" id="labelInputWrap" style="display:none">
+          <label for="labelInput">New label</label>
           <input id="labelInput" type="text" placeholder="e.g., Genesis 1" style="background:transparent;color:var(--text);border:0;outline:none;min-width:160px">
+          <button id="btnCancelNew" class="btn-ghost">Cancel</button>
         </div>
-        <div class="pill">
+        <div class="pill" id="labelDropdownWrap">
           <label for="labelFilter">Practice label</label>
           <select id="labelFilter">
             <option value="" disabled selected>Select a label</option>
           </select>
         </div>
-        <button id="btnGenerate">Generate</button>
+        <button id="btnNewLabel">New Label</button>
+        <button id="btnGenerate" disabled>Generate</button>
       </div>
 
       <div class="grid" style="gap:10px;margin-top:8px">
@@ -180,6 +184,7 @@
       var isDark = (W.colorScheme === 'dark');
       document.documentElement.classList.toggle('tg-dark', isDark);
       if(W.setHeaderColor) W.setHeaderColor(isDark ? '#0b0f14' : '#ffffff');
+      if(W.setBottomBarColor) W.setBottomBarColor('#ffffff');
     }catch(e){}
     try{ document.body.style.background = W.backgroundColor || getComputedStyle(document.body).backgroundColor; }catch(e){}
   })();
@@ -190,51 +195,67 @@
   const $$ = sel => Array.from(document.querySelectorAll(sel));
   const clamp = (n,min,max)=> Math.max(min, Math.min(max, n));
 
-  // --- Storage layer: CloudStorage when inside Telegram, else localStorage ---
+  // --- Storage layer: CloudStorage when possible, else localStorage ---
   const TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
-  const CS = (TG && TG.CloudStorage) ? TG.CloudStorage : null;
-  const KEY_BASE = 'm:v5'; // bump for substitute feature
-  const CHUNK = 3500; // safe under ~4KB limits per value
+  const TG_VER = (function(){
+    var v = 0; try { v = parseFloat((TG && (TG.version || TG.platformVersion)) || '0'); } catch(e) {}
+    return isNaN(v) ? 0 : v;
+  })();
+  // Guard: only consider CloudStorage usable on recent versions
+  const CS = (TG && TG.CloudStorage && TG_VER >= 6.9) ? TG.CloudStorage : null;
+  const KEY_BASE = 'm:v7';
+  const CHUNK = 3500;
 
   const storage = {
     async saveState(obj){
       const json = JSON.stringify(obj);
-      if(!CS){ localStorage.setItem(KEY_BASE, json); return true; }
-      const parts = Math.ceil(json.length / CHUNK);
-      await new Promise(res=> CS.setItem(KEY_BASE+':index', String(parts), ()=>res(true)));
-      const promises = [];
-      for(let i=0;i<parts;i++){
-        const slice = json.slice(i*CHUNK, (i+1)*CHUNK);
-        promises.push(new Promise(res=> CS.setItem(KEY_BASE+':'+i, slice, ()=>res(true))));
-      }
-      await Promise.all(promises);
+      if(!CS){ try{ localStorage.setItem(KEY_BASE, json); }catch(e){} return true; }
       try{
-        await new Promise(res=> CS.getKeys(function(keys){
-          (keys||[]).filter(function(k){ return k.indexOf(KEY_BASE+':')===0 && k.indexOf(':index')===-1 && Number(k.split(':').pop())>=parts; })
-            .forEach(function(k){ CS.removeItem(k, function(){}); });
-          res(true);
-        }));
-      }catch(e){}
-      return true;
+        const parts = Math.ceil(json.length / CHUNK);
+        await new Promise(res=> { try{ CS.setItem(KEY_BASE+':index', String(parts), ()=>res(true)); } catch(e){ res(false); } });
+        const promises = [];
+        for(let i=0;i<parts;i++){
+          const slice = json.slice(i*CHUNK, (i+1)*CHUNK);
+          promises.push(new Promise(res=> { try{ CS.setItem(KEY_BASE+':'+i, slice, ()=>res(true)); } catch(e){ res(false); } }));
+        }
+        await Promise.all(promises);
+        try{
+          await new Promise(res=> { try{ CS.getKeys(function(keys){
+            (keys||[]).filter(function(k){ return k.indexOf(KEY_BASE+':')===0 && k.indexOf(':index')===-1 && Number(k.split(':').pop())>=parts; })
+              .forEach(function(k){ try{ CS.removeItem(k, function(){}); }catch(e){} });
+            res(true);
+          }); } catch(e){ res(false); } });
+        }catch(e){}
+        return true;
+      }catch(err){
+        try{ localStorage.setItem(KEY_BASE, json); }catch(e){}
+        return true;
+      }
     },
     async loadState(){
-      if(!CS){ var raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }
-      const idxStr = await new Promise(res=> CS.getItem(KEY_BASE+':index', v=>res(v)));
-      if(!idxStr){ return null; }
-      const parts = parseInt(idxStr,10) || 0; if(!parts) return null;
-      const chunks = [];
-      for(let i=0;i<parts;i++){
-        const c = await new Promise(res=> CS.getItem(KEY_BASE+':'+i, v=>res(v||'')));
-        chunks.push(c);
+      if(!CS){ try{ var raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }catch(e){ return null; } }
+      try{
+        const idxStr = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':index', v=>res(v)); } catch(e){ res(null); } });
+        if(!idxStr){ return null; }
+        const parts = parseInt(idxStr,10) || 0; if(!parts) return null;
+        const chunks = [];
+        for(let i=0;i<parts;i++){
+          const c = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':'+i, v=>res(v||'')); } catch(e){ res(''); } });
+          chunks.push(c);
+        }
+        try{ return JSON.parse(chunks.join('')); }catch(e){ return null; }
+      }catch(err){
+        try{ var raw2 = localStorage.getItem(KEY_BASE); return raw2? JSON.parse(raw2): null; }catch(e){ return null; }
       }
-      try{ return JSON.parse(chunks.join('')); }catch(e){ return null; }
     },
     async clearState(){
-      if(!CS){ localStorage.removeItem(KEY_BASE); return true; }
-      const keys = await new Promise(res=> CS.getKeys(k=>res(k||[])));
-      const targets = keys.filter(k=> k===KEY_BASE || k.indexOf(KEY_BASE+':')===0);
-      await Promise.all(targets.map(k=> new Promise(res=> CS.removeItem(k, ()=>res(true)))));
-      return true;
+      if(!CS){ try{ localStorage.removeItem(KEY_BASE); }catch(e){} return true; }
+      try{
+        const keys = await new Promise(res=> { try{ CS.getKeys(k=>res(k||[])); } catch(e){ res([]); } });
+        const targets = keys.filter(k=> k===KEY_BASE || k.indexOf(KEY_BASE+':')===0);
+        await Promise.all(targets.map(k=> new Promise(res=> { try{ CS.removeItem(k, ()=>res(true)); } catch(e){ res(true); } })));
+        return true;
+      }catch(err){ try{ localStorage.removeItem(KEY_BASE); }catch(e){} return true; }
     }
   };
 
@@ -243,7 +264,6 @@
   function shouldMask(seed, wordIndex, pct){ if(pct<=0) return false; const h = hash32(seed+'#'+wordIndex); return (h % 100) < pct; }
 
   function splitSentences(text){
-    // no lookbehind: insert newlines after punctuation, then split
     const norm = text.trim().replace(/\r\n?/g, "\n");
     const withBreaks = norm.replace(/([.!?])\s+/g, '$1\n');
     return withBreaks.split(/\n+/).map(s=>s.trim()).filter(Boolean);
@@ -251,7 +271,7 @@
 
   function applyCutAndSub(sentence, cutN, subPct, seed){
     if(!cutN) return sentence; let k=0;
-    return sentence.replace(/([A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*)([^\sA-Za-zÀ-ÖØ-öø-ÿ]*)/g, function(full, w, t){
+    return sentence.replace(/([A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*)([^\sA-Za-zÀ-ÖØ-öÿ]*)/g, function(full, w, t){
       var cut = (w.length<=cutN? w : w.slice(0, cutN));
       if(subPct>0 && shouldMask(seed, k++, subPct)) cut = '_';
       return cut + t;
@@ -261,7 +281,7 @@
   // Data model
   let state = {
     sentences:[], labels:[], sentenceLabel:[], order:[], learned:new Set(), progress:{},
-    cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', undoStack:[],
+    cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', newLabelMode:false, undoStack:[],
   };
 
   async function persist(){
@@ -406,12 +426,30 @@
   function resetOrder(){ state.order=state.sentences.map(function(_,i){return i;}); render(); }
   function resetCounts(){ state.progress={}; render(); }
   async function unhideAll(){ state.learned=new Set(); render(); }
-  async function clearSession(){ await storage.clearState(); state={ sentences:[], labels:[], sentenceLabel:[], order:[], learned:new Set(), progress:{}, cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', undoStack:[] }; buildLabelDropdown(); populateTextareaForLabel(''); render(); }
+  async function clearSession(){ await storage.clearState(); state={ sentences:[], labels:[], sentenceLabel:[], order:[], learned:new Set(), progress:{}, cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', newLabelMode:false, undoStack:[] }; buildLabelDropdown(); populateTextareaForLabel(''); render(); }
   function checkOrder(){ const cards=$$('#sentences .card-sentence'); cards.forEach(function(card, pos){ const idx=Number(card.dataset.idx); const ok=idx===pos; card.style.outline = ok? '2px solid rgba(34,197,94,.6)' : '2px solid rgba(239,68,68,.4)'; }); setTimeout(function(){ cards.forEach(function(c){ c.style.outline=''; }); }, 1200); }
   function copyCSV(){ const rows=[['index','sentence','label','cut','subPct','ok','bad','learned']]; state.sentences.forEach(function(s,i){ const p=state.progress[i]||{ok:0,bad:0}; rows.push([i, s.replace(/\n/g,' '), state.sentenceLabel[i]||'', state.cut, state.subPct, p.ok, p.bad, state.learned.has(i)?1:0]); }); const csv=rows.map(function(r){return r.map(function(cell){ return '"'+String(cell).replace(/\"/g,'\"\"')+'"'; }).join(',');}).join('\n'); if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(csv).then(function(){ alert('Progress copied to clipboard as CSV.'); }).catch(fallback);} else { fallback(); } function fallback(){ const ta=document.createElement('textarea'); ta.value=csv; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); alert('Progress copied to clipboard as CSV.'); }catch(e){ alert('Copy failed. Select text manually.'); } ta.remove(); } }
 
-  // Import flow
-  $('#btnGenerate').addEventListener('click', function(){ const label=($('#labelInput').value||'').trim(); const t=($('#text').value||'').trim(); if(!label){ alert('Please enter a label for this import.'); return; } if(!t){ alert('Please paste some text.'); return; } const parts=splitSentences(t); if(!parts.length){ alert('No sentences found.'); return; } ensureLabel(label); const baseLen=state.sentences.length; for(const s of parts){ state.sentences.push(s); state.sentenceLabel.push(label); } state.order = state.order.concat(parts.map(function(_,i){return baseLen + i;})); state.selectedLabel=label; buildLabelDropdown(); render(); populateTextareaForLabel(label); });
+  // Import flow (Generate saves; New Label just toggles UI)
+  $('#btnGenerate').addEventListener('click', function(){
+    var isNew = !!state.newLabelMode;
+    var label = isNew ? (($('#labelInput').value)||'').trim() : (($('#labelFilter').value)||'').trim();
+    var t = (($('#text').value)||'').trim();
+    if(!label){ alert('Please enter a label.'); return; }
+    if(!t){ alert('Please paste some text.'); return; }
+    var parts = splitSentences(t);
+    if(!parts.length){ alert('No sentences found.'); return; }
+    ensureLabel(label);
+    var baseLen=state.sentences.length;
+    for(var i=0;i<parts.length;i++){ state.sentences.push(parts[i]); state.sentenceLabel.push(label); }
+    state.order = state.order.concat(parts.map(function(_,i){return baseLen + i;}));
+    state.selectedLabel = label;
+    buildLabelDropdown();
+    render();
+    populateTextareaForLabel(label);
+    if(isNew){ setNewLabelMode(false); $('#labelInput').value=''; }
+    updateGenerateEnabled();
+  });
 
   // Controls
   $$('#inputCard input[name="cut"]').forEach(function(r){ r.addEventListener('change', function(){ state.cut=Number(document.querySelector('input[name="cut"]:checked').value); render(); }); });
@@ -423,9 +461,37 @@
   $('#btnClearSession').addEventListener('click', clearSession);
   $('#btnCheckOrder').addEventListener('click', checkOrder);
   $('#btnExportCSV').addEventListener('click', copyCSV);
-  $('#labelFilter').addEventListener('change', function(e){ state.selectedLabel=e.target.value; render(); populateTextareaForLabel(state.selectedLabel); });
+  $('#labelFilter').addEventListener('change', function(e){ state.selectedLabel=e.target.value; render(); populateTextareaForLabel(state.selectedLabel); updateGenerateEnabled(); });
   $('#toggleStruggle').addEventListener('change', function(e){ state.struggleOnly=e.target.checked; render(); });
   $('#struggleN').addEventListener('change', function(e){ state.struggleN=clamp(parseInt(e.target.value||'1',10),1,999); render(); });
+
+  // New Label UX
+  function setNewLabelMode(on){
+    state.newLabelMode = !!on;
+    $('#labelInputWrap').style.display = on ? '' : 'none';
+    $('#labelDropdownWrap').style.display = on ? 'none' : '';
+    $('#btnCancelNew').style.display = on ? '' : 'none';
+    $('#btnNewLabel').style.display = on ? 'none' : '';
+    if(on){ $('#text').value=''; $('#labelInput').value=''; $('#labelInput').focus(); }
+    else { populateTextareaForLabel(state.selectedLabel); }
+    updateGenerateEnabled();
+  }
+  $('#btnNewLabel').addEventListener('click', function(){ setNewLabelMode(true); });
+  $('#btnCancelNew').addEventListener('click', function(){ setNewLabelMode(false); });
+
+  // Live-enable Generate as user types/selects
+  $('#text').addEventListener('input', updateGenerateEnabled);
+  document.addEventListener('input', function(e){ if(e.target && e.target.id==='labelInput'){ updateGenerateEnabled(); } });
+
+  // Helpers to validate Generate availability
+  function currentLabelCandidate(){ return state.newLabelMode ? (($('#labelInput').value)||'').trim() : (($('#labelFilter').value)||'').trim(); }
+  function updateGenerateEnabled(){
+    var hasLabel = !!currentLabelCandidate();
+    var hasText = ((($('#text').value)||'').trim().length) > 0;
+    var dis = !(hasLabel && hasText);
+    var btn = $('#btnGenerate');
+    if(btn){ btn.disabled = dis; btn.title = dis ? 'Enter a label and paste text' : ''; }
+  }
 
   // Boot
   (async function boot(){
@@ -434,7 +500,15 @@
     if([0,30,50,90].indexOf(state.subPct)>=0){ var r2 = document.querySelector('input[name="sub"][value="'+state.subPct+'"]'); if(r2) r2.checked=true; }
     buildLabelDropdown();
     populateTextareaForLabel(state.selectedLabel);
+    setNewLabelMode(false);
     render();
+    updateGenerateEnabled();
+    // Show storage mode to the user
+    var note = document.getElementById('storageNote');
+    if(note){
+      var mode = CS ? ('Telegram CloudStorage (v'+TG_VER.toFixed(1)+')') : 'Local storage on this device';
+      note.textContent = 'Storage: '+mode;
+    }
   })();
   </script>
 </body>

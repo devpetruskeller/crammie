@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+<!-- Background rounded square -->
+<rect x="32" y="32" width="448" height="448" rx="96" fill="#0b0f14"/>
+<rect x="32" y="32" width="448" height="448" rx="96" fill="url(#g)" opacity="0.4"/>
+
+
+<!-- Stylised M (for Memoriser) -->
+<path d="M128 360V160h48l80 112 80-112h48v200h-48V246l-80 110-80-110v114h-48z" fill="#22d3ee"/>
+
+
+<!-- Accent dot (hinting at a bullet / sentence) -->
+<circle cx="392" cy="136" r="16" fill="#22c55e"/>
+
+
+<defs>
+<linearGradient id="g" x1="32" y1="32" x2="480" y2="480" gradientUnits="userSpaceOnUse">
+<stop stop-color="#111827"/>
+<stop offset="1" stop-color="#0b0f14"/>
+</linearGradient>
+</defs>
+</svg>

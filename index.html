@@ -171,12 +171,17 @@
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>
-  // Telegram theme + setup
+  // Telegram theme + setup (no optional chaining for older webviews)
   (function(){
-    const W = window.Telegram?.WebApp; if(!W) return;
-    try{ W.ready(); W.expand(); }catch{}
-    try{ const isDark = (W.colorScheme === 'dark'); document.documentElement.classList.toggle('tg-dark', isDark); W.setHeaderColor(isDark ? '#0b0f14' : '#ffffff'); }catch{}
-    try{ document.body.style.background = W.backgroundColor || getComputedStyle(document.body).backgroundColor; }catch{}
+    var W = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    if(!W) return;
+    try{ W.ready(); W.expand(); }catch(e){}
+    try{
+      var isDark = (W.colorScheme === 'dark');
+      document.documentElement.classList.toggle('tg-dark', isDark);
+      if(W.setHeaderColor) W.setHeaderColor(isDark ? '#0b0f14' : '#ffffff');
+    }catch(e){}
+    try{ document.body.style.background = W.backgroundColor || getComputedStyle(document.body).backgroundColor; }catch(e){}
   })();
   </script>
 
@@ -186,8 +191,8 @@
   const clamp = (n,min,max)=> Math.max(min, Math.min(max, n));
 
   // --- Storage layer: CloudStorage when inside Telegram, else localStorage ---
-  const TG = window.Telegram?.WebApp;
-  const CS = TG?.CloudStorage;
+  const TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+  const CS = (TG && TG.CloudStorage) ? TG.CloudStorage : null;
   const KEY_BASE = 'm:v5'; // bump for substitute feature
   const CHUNK = 3500; // safe under ~4KB limits per value
 
@@ -200,30 +205,34 @@
       const promises = [];
       for(let i=0;i<parts;i++){
         const slice = json.slice(i*CHUNK, (i+1)*CHUNK);
-        promises.push(new Promise(res=> CS.setItem(`${KEY_BASE}:${i}`, slice, ()=>res(true))));
+        promises.push(new Promise(res=> CS.setItem(KEY_BASE+':'+i, slice, ()=>res(true))));
       }
       await Promise.all(promises);
       try{
-        await new Promise(res=> CS.getKeys(keys=>{ (keys||[]).filter(k=> k.startsWith(KEY_BASE+':') && !k.endsWith(':index') && Number(k.split(':').pop())>=parts).forEach(k=> CS.removeItem(k, ()=>{})); res(true); }));
-      }catch{}
+        await new Promise(res=> CS.getKeys(function(keys){
+          (keys||[]).filter(function(k){ return k.indexOf(KEY_BASE+':')===0 && k.indexOf(':index')===-1 && Number(k.split(':').pop())>=parts; })
+            .forEach(function(k){ CS.removeItem(k, function(){}); });
+          res(true);
+        }));
+      }catch(e){}
       return true;
     },
     async loadState(){
-      if(!CS){ const raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }
+      if(!CS){ var raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }
       const idxStr = await new Promise(res=> CS.getItem(KEY_BASE+':index', v=>res(v)));
       if(!idxStr){ return null; }
       const parts = parseInt(idxStr,10) || 0; if(!parts) return null;
       const chunks = [];
       for(let i=0;i<parts;i++){
-        const c = await new Promise(res=> CS.getItem(`${KEY_BASE}:${i}`, v=>res(v||'')));
+        const c = await new Promise(res=> CS.getItem(KEY_BASE+':'+i, v=>res(v||'')));
         chunks.push(c);
       }
-      try{ return JSON.parse(chunks.join('')); }catch{ return null; }
+      try{ return JSON.parse(chunks.join('')); }catch(e){ return null; }
     },
     async clearState(){
       if(!CS){ localStorage.removeItem(KEY_BASE); return true; }
       const keys = await new Promise(res=> CS.getKeys(k=>res(k||[])));
-      const targets = keys.filter(k=> k===KEY_BASE || k.startsWith(KEY_BASE+':'));
+      const targets = keys.filter(k=> k===KEY_BASE || k.indexOf(KEY_BASE+':')===0);
       await Promise.all(targets.map(k=> new Promise(res=> CS.removeItem(k, ()=>res(true)))));
       return true;
     }
@@ -234,13 +243,16 @@
   function shouldMask(seed, wordIndex, pct){ if(pct<=0) return false; const h = hash32(seed+'#'+wordIndex); return (h % 100) < pct; }
 
   function splitSentences(text){
-    return text.trim().replace(/\r\n?/g, "\n").split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
+    // no lookbehind: insert newlines after punctuation, then split
+    const norm = text.trim().replace(/\r\n?/g, "\n");
+    const withBreaks = norm.replace(/([.!?])\s+/g, '$1\n');
+    return withBreaks.split(/\n+/).map(s=>s.trim()).filter(Boolean);
   }
 
   function applyCutAndSub(sentence, cutN, subPct, seed){
     if(!cutN) return sentence; let k=0;
-    return sentence.replace(/([A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*)([^\sA-Za-zÀ-ÖØ-öø-ÿ]*)/g, (full, w, t)=>{
-      let cut = (w.length<=cutN? w : w.slice(0, cutN));
+    return sentence.replace(/([A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*)([^\sA-Za-zÀ-ÖØ-öø-ÿ]*)/g, function(full, w, t){
+      var cut = (w.length<=cutN? w : w.slice(0, cutN));
       if(subPct>0 && shouldMask(seed, k++, subPct)) cut = '_';
       return cut + t;
     });
@@ -275,38 +287,38 @@
       state.sentences = p.sentences||[];
       state.labels = p.labels||[];
       state.sentenceLabel = p.sentenceLabel||[];
-      state.order = Array.isArray(p.order)? p.order : state.sentences.map((_,i)=>i);
+      state.order = Array.isArray(p.order)? p.order : state.sentences.map(function(_,i){return i;});
       state.learned = new Set(p.learned||[]);
       state.progress = p.progress||{};
-      state.cut = [1,2,3].includes(p.cut)? p.cut:3;
-      state.subPct = [0,30,50,90].includes(p.subPct)? p.subPct:0;
+      state.cut = [1,2,3].indexOf(p.cut)>=0? p.cut:3;
+      state.subPct = [0,30,50,90].indexOf(p.subPct)>=0? p.subPct:0;
       state.struggleOnly = !!p.struggleOnly;
-      state.struggleN = Number.isFinite(p.struggleN)? p.struggleN:1;
+      state.struggleN = (Number.isFinite && Number.isFinite(p.struggleN))? p.struggleN:1;
       state.selectedLabel = p.selectedLabel || '';
     }catch(e){ console.warn('load failed', e); }
   }
 
-  function ensureLabel(name){ if(!name) return; if(!state.labels.includes(name)) state.labels.push(name); buildLabelDropdown(); }
+  function ensureLabel(name){ if(!name) return; if(state.labels.indexOf(name)===-1) state.labels.push(name); buildLabelDropdown(); }
 
   function buildLabelDropdown(){
     const sel = $('#labelFilter');
     const prev = state.selectedLabel;
-    sel.innerHTML = (state.labels.length ? '' : '<option value="" disabled selected>Select a label</option>') + state.labels.map(L=>`<option value="${L.replace(/\"/g,'&quot;')}">${L}</option>`).join('');
-    sel.value = (prev && state.labels.includes(prev)) ? prev : (state.labels[0]||'');
+    sel.innerHTML = (state.labels.length ? '' : '<option value="" disabled selected>Select a label</option>') + state.labels.map(function(L){return '<option value="'+L.replace(/\"/g,'&quot;')+'">'+L+'</option>';}).join('');
+    sel.value = (prev && state.labels.indexOf(prev)>=0) ? prev : (state.labels[0]||'');
     state.selectedLabel = sel.value || '';
   }
 
   function populateTextareaForLabel(label){
     const ta = $('#text');
     if(!label){ ta.value=''; return; }
-    const parts = state.sentences.filter((_,i)=> state.sentenceLabel[i]===label);
+    const parts = state.sentences.filter(function(_,i){ return state.sentenceLabel[i]===label; });
     ta.value = parts.join('\n');
   }
 
   function showLabelSourceAndSelectSentence(idx){
     const label = state.sentenceLabel[idx];
-    const indices = state.sentences.map((_,i)=> i).filter(i=> state.sentenceLabel[i]===label);
-    const parts = indices.map(i=> state.sentences[i]);
+    const indices = state.sentences.map(function(_,i){return i;}).filter(function(i){ return state.sentenceLabel[i]===label; });
+    const parts = indices.map(function(i){ return state.sentences[i]; });
     const sep = '\n';
     const source = parts.join(sep);
     const ta = $('#text');
@@ -315,13 +327,13 @@
     let start = 0; for(let i=0;i<k;i++){ start += parts[i].length + sep.length; }
     const end = start + parts[k].length;
     ta.focus(); if(ta.setSelectionRange) ta.setSelectionRange(start,end); else { ta.selectionStart=start; ta.selectionEnd=end; }
-    ta.classList.add('ta-ping'); setTimeout(()=> ta.classList.remove('ta-ping'), 600);
+    ta.classList.add('ta-ping'); setTimeout(function(){ ta.classList.remove('ta-ping'); }, 600);
     if(/Mobi|Android/i.test(navigator.userAgent)){ ta.blur(); ta.focus(); }
   }
 
   function displaySentence(idx){
     const label = state.sentenceLabel[idx] || '';
-    const seed = `${label}|${idx}|${state.subPct}`;
+    const seed = label+'|'+idx+'|'+state.subPct;
     const text = applyCutAndSub(state.sentences[idx], state.cut, state.subPct, seed);
     const prog = state.progress[idx] || {ok:0,bad:0};
     const total = prog.ok + prog.bad; const ratio = total? Math.round((prog.ok/total)*100):0;
@@ -329,40 +341,40 @@
     const drag = document.createElement('div'); drag.className='drag'; drag.textContent='⋮⋮';
     const txt = document.createElement('div'); txt.className='text'; txt.textContent = text;
     const counts = document.createElement('div'); counts.className='counts';
-    counts.innerHTML = `<span class="badge">${label||'Label'}</span> <button class="btn btn-ok" data-act="ok" title="Mark correct">✅</button><span class="ok">(${prog.ok})</span><button class="btn btn-bad" data-act="bad" title="Mark incorrect">❌</button><span class="bad">(${prog.bad})</span>`;
-    const bar = document.createElement('div'); bar.className='progress'; bar.innerHTML = `<i style="width:${ratio}%"></i>`;
+    counts.innerHTML = '<span class="badge">'+(label||'Label')+'</span> <button class="btn btn-ok" data-act="ok" title="Mark correct">✅</button><span class="ok">('+(prog.ok)+')</span><button class="btn btn-bad" data-act="bad" title="Mark incorrect">❌</button><span class="bad">('+(prog.bad)+')</span>';
+    const bar = document.createElement('div'); bar.className='progress'; bar.innerHTML = '<i style="width:'+ratio+'%"></i>';
 
     card.appendChild(drag); card.appendChild(txt); card.appendChild(counts); card.appendChild(bar);
 
-    if((state.progress[idx]?.bad||0) >= state.struggleN){ card.classList.add('struggling'); }
+    if((state.progress[idx] && state.progress[idx].bad || 0) >= state.struggleN){ card.classList.add('struggling'); }
 
-    counts.addEventListener('click', (e)=>{ const btn=e.target.closest('button'); if(!btn) return; const act=btn.dataset.act; if(!act) return; if(act==='ok') markOk(idx); if(act==='bad') markBad(idx); });
-    card.addEventListener('click', (e)=>{ if(e.target.closest('button')||e.target.closest('.counts')) return; showLabelSourceAndSelectSentence(idx); });
-    card.tabIndex=0; card.addEventListener('focus', ()=>{ $$('.card-sentence').forEach(x=>x.classList.remove('focused')); card.classList.add('focused'); });
+    counts.addEventListener('click', function(e){ const btn=e.target.closest('button'); if(!btn) return; const act=btn.getAttribute('data-act'); if(!act) return; if(act==='ok') markOk(idx); if(act==='bad') markBad(idx); });
+    card.addEventListener('click', function(e){ if(e.target.closest('button')||e.target.closest('.counts')) return; showLabelSourceAndSelectSentence(idx); });
+    card.tabIndex=0; card.addEventListener('focus', function(){ $$('.card-sentence').forEach(function(x){x.classList.remove('focused');}); card.classList.add('focused'); });
 
     // Desktop DnD
-    card.addEventListener('dragstart', (e)=>{ dragSrcIdx = idx; card.classList.add('ghost'); e.dataTransfer.effectAllowed='move'; });
-    card.addEventListener('dragend', ()=> card.classList.remove('ghost'));
-    card.addEventListener('dragover', (e)=>{ e.preventDefault(); e.dataTransfer.dropEffect='move'; });
-    card.addEventListener('drop', (e)=>{ e.preventDefault(); const from = dragSrcIdx; const to = state.order.indexOf(idx); moveCardByPosition(from, to); });
+    card.addEventListener('dragstart', function(e){ dragSrcIdx = idx; card.classList.add('ghost'); e.dataTransfer.effectAllowed='move'; });
+    card.addEventListener('dragend', function(){ card.classList.remove('ghost'); });
+    card.addEventListener('dragover', function(e){ e.preventDefault(); e.dataTransfer.dropEffect='move'; });
+    card.addEventListener('drop', function(e){ e.preventDefault(); const from = dragSrcIdx; const to = state.order.indexOf(idx); moveCardByPosition(from, to); });
 
     // Touch reorder (long-press, pointer capture, auto-scroll)
-    card.addEventListener('pointerdown', (ev) => {
+    card.addEventListener('pointerdown', function(ev){
       if (ev.pointerType !== 'touch') return;
       if (ev.target.closest('button') || ev.target.closest('.counts')) return;
-      let pressTimer = null; const startX = ev.clientX; const startY = ev.clientY; const container = $('#sentences');
-      pressTimer = setTimeout(() => beginDrag(ev), 200);
+      var pressTimer = null; var startX = ev.clientX; var startY = ev.clientY; var container = $('#sentences');
+      pressTimer = setTimeout(function(){ beginDrag(ev); }, 200);
       function cancelPress(){ clearTimeout(pressTimer); pressTimer=null; window.removeEventListener('pointermove', maybeCancel); window.removeEventListener('pointerup', cancelPress, {once:true}); }
       function maybeCancel(moveEv){ if (Math.abs(moveEv.clientY - startY) > 6 || Math.abs(moveEv.clientX - startX) > 6) cancelPress(); }
       window.addEventListener('pointermove', maybeCancel, { passive: true });
       window.addEventListener('pointerup', cancelPress, { once: true });
-      function beginDrag(startEv){ if (navigator.vibrate) { try { navigator.vibrate(10); } catch {} }
-        document.body.classList.add('drag-active'); card.classList.add('dragging'); card.setPointerCapture?.(startEv.pointerId);
+      function beginDrag(startEv){ if (navigator.vibrate) { try { navigator.vibrate(10); } catch (e){} }
+        document.body.classList.add('drag-active'); card.classList.add('dragging'); if(card.setPointerCapture) card.setPointerCapture(startEv.pointerId);
         const cardRect = card.getBoundingClientRect();
         const ghost = card.cloneNode(true); Object.assign(ghost.style, { position:'fixed', left: cardRect.left+'px', top: cardRect.top+'px', width: cardRect.width+'px', pointerEvents:'none', opacity:'0.85', transform:'translate3d(0,0,0)', zIndex:1000 }); document.body.appendChild(ghost);
         const placeholder = document.createElement('div'); placeholder.className='card-sentence'; placeholder.style.height=card.offsetHeight+'px'; placeholder.style.border='1px dashed var(--outline)'; card.style.visibility='hidden'; card.parentNode.insertBefore(placeholder, card.nextSibling);
-        let scrollRAF=null; function autoScroll(y){ const edge=60, speed=12, viewH=window.innerHeight; let dy=0; if(y < edge) dy=-speed; else if(y > viewH-edge) dy=speed; if(dy===0){ if(scrollRAF) cancelAnimationFrame(scrollRAF); scrollRAF=null; return; } const step=()=>{ window.scrollBy(0, dy); scrollRAF=requestAnimationFrame(step); }; if(!scrollRAF) scrollRAF=requestAnimationFrame(step); }
-        function onMove(e){ e.preventDefault(); const dy=e.clientY - startY; ghost.style.transform = `translate3d(0, ${dy}px, 0)`; autoScroll(e.clientY); const centerY = ghost.getBoundingClientRect().top + ghost.offsetHeight/2; const items = Array.from(container.children); let newPos = 0; for(let i=0;i<items.length;i++){ const r = items[i].getBoundingClientRect(); if(centerY > r.top + r.height/2) newPos = i+1; } newPos=Math.min(newPos, items.length-1); if(items[newPos]!==placeholder){ container.insertBefore(placeholder, items[newPos]); } }
+        var scrollRAF=null; function autoScroll(y){ var edge=60, speed=12, viewH=window.innerHeight; var dy=0; if(y < edge) dy=-speed; else if(y > viewH-edge) dy=speed; if(dy===0){ if(scrollRAF) cancelAnimationFrame(scrollRAF); scrollRAF=null; return; } var step=function(){ window.scrollBy(0, dy); scrollRAF=requestAnimationFrame(step); }; if(!scrollRAF) scrollRAF=requestAnimationFrame(step); }
+        function onMove(e){ e.preventDefault(); const dy=e.clientY - startY; ghost.style.transform = 'translate3d(0, '+dy+'px, 0)'; autoScroll(e.clientY); const centerY = ghost.getBoundingClientRect().top + ghost.offsetHeight/2; const items = Array.from(container.children); let newPos = 0; for(let i=0;i<items.length;i++){ const r = items[i].getBoundingClientRect(); if(centerY > r.top + r.height/2) newPos = i+1; } newPos=Math.min(newPos, items.length-1); if(items[newPos]!==placeholder){ container.insertBefore(placeholder, items[newPos]); } }
         function onUp(){ if(scrollRAF) cancelAnimationFrame(scrollRAF); document.body.classList.remove('drag-active'); card.classList.remove('dragging'); ghost.remove(); const items = Array.from(container.children); const newPos = items.indexOf(placeholder); placeholder.replaceWith(card); card.style.visibility=''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); moveCardByPosition(idx, newPos); }
         window.addEventListener('pointermove', onMove, { passive: false }); window.addEventListener('pointerup', onUp, { once: true }); }
     });
@@ -373,10 +385,10 @@
   function render(){
     const list=$('#sentences'); list.innerHTML=''; const learnedList=$('#learnedList'); learnedList.innerHTML='';
     const filter=state.selectedLabel;
-    const visibleIdxs=state.order.filter(i=> filter && !state.learned.has(i) && state.sentenceLabel[i]===filter);
-    const learnedIdxs=state.order.filter(i=> filter && state.learned.has(i) && state.sentenceLabel[i]===filter);
+    const visibleIdxs=state.order.filter(function(i){ return filter && !state.learned.has(i) && state.sentenceLabel[i]===filter; });
+    const learnedIdxs=state.order.filter(function(i){ return filter && state.learned.has(i) && state.sentenceLabel[i]===filter; });
 
-    let any=false; for(const i of visibleIdxs){ if(state.struggleOnly && (state.progress[i]?.bad||0) < state.struggleN) continue; any=true; list.appendChild(displaySentence(i)); }
+    let any=false; for(const i of visibleIdxs){ if(state.struggleOnly && ((state.progress[i] && state.progress[i].bad)||0) < state.struggleN) continue; any=true; list.appendChild(displaySentence(i)); }
     $('#emptyState').style.display = any? 'none':'block';
     for(const i of learnedIdxs){ learnedList.appendChild(renderLearned(i)); }
     $('#learnedCount').textContent = learnedIdxs.length; $('#cutNote').textContent = state.cut===1? '(Progress mode)':'(Progress best at cut = 1)';
@@ -384,47 +396,42 @@
     persist();
   }
 
-  function renderLearned(idx){ const label=state.sentenceLabel[idx]||''; const wrap=document.createElement('div'); wrap.className='card-sentence'; wrap.style.opacity=.85; const t=document.createElement('div'); t.className='text'; t.textContent=applyCutAndSub(state.sentences[idx], state.cut, state.subPct, `${label}|${idx}|${state.subPct}`); const counts=document.createElement('div'); counts.className='counts'; const p=state.progress[idx]||{ok:0,bad:0}; counts.innerHTML=`<span class="badge">${label||'Label'}</span> <span class="ok">✅(${p.ok})</span><span class="bad">❌(${p.bad})</span>`; const unhide=document.createElement('button'); unhide.textContent='Unhide'; unhide.className='btn btn-ghost'; unhide.addEventListener('click', ()=>{ state.learned.delete(idx); render(); }); wrap.appendChild(document.createTextNode('✔')); wrap.appendChild(t); wrap.appendChild(counts); wrap.appendChild(unhide); const bar=document.createElement('div'); bar.className='progress'; bar.innerHTML=`<i style="width:${(p.ok/(p.ok+p.bad)||0)*100}%"></i>`; wrap.appendChild(bar); wrap.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; showLabelSourceAndSelectSentence(idx); }); return wrap; }
+  function renderLearned(idx){ const label=state.sentenceLabel[idx]||''; const wrap=document.createElement('div'); wrap.className='card-sentence'; wrap.style.opacity=.85; const t=document.createElement('div'); t.className='text'; t.textContent=applyCutAndSub(state.sentences[idx], state.cut, state.subPct, label+'|'+idx+'|'+state.subPct); const counts=document.createElement('div'); counts.className='counts'; const p=state.progress[idx]||{ok:0,bad:0}; counts.innerHTML='<span class="badge">'+(label||'Label')+'</span> <span class="ok">✅('+(p.ok)+')</span><span class="bad">❌('+(p.bad)+')</span>'; const unhide=document.createElement('button'); unhide.textContent='Unhide'; unhide.className='btn btn-ghost'; unhide.addEventListener('click', function(){ state.learned.delete(idx); render(); }); wrap.appendChild(document.createTextNode('✔')); wrap.appendChild(t); wrap.appendChild(counts); wrap.appendChild(unhide); const bar=document.createElement('div'); bar.className='progress'; var pct = (p.ok + p.bad) ? (p.ok/(p.ok+p.bad))*100 : 0; bar.innerHTML='<i style="width:'+pct+'%"></i>'; wrap.appendChild(bar); wrap.addEventListener('click', function(e){ if(e.target.closest('button')) return; showLabelSourceAndSelectSentence(idx); }); return wrap; }
 
   // Actions
   let dragSrcIdx=null;
   function moveCardByPosition(fromSentenceIdx, toPosition){ const curPos=state.order.indexOf(fromSentenceIdx); if(curPos<0||toPosition<0) return; const arr=state.order.slice(); arr.splice(curPos,1); arr.splice(toPosition,0,fromSentenceIdx); state.order=arr; render(); }
   function markOk(idx){ const p=state.progress[idx]||(state.progress[idx]={ok:0,bad:0}); p.ok++; state.learned.add(idx); render(); }
   function markBad(idx){ const p=state.progress[idx]||(state.progress[idx]={ok:0,bad:0}); p.bad++; render(); }
-  function resetOrder(){ state.order=state.sentences.map((_,i)=>i); render(); }
+  function resetOrder(){ state.order=state.sentences.map(function(_,i){return i;}); render(); }
   function resetCounts(){ state.progress={}; render(); }
   async function unhideAll(){ state.learned=new Set(); render(); }
   async function clearSession(){ await storage.clearState(); state={ sentences:[], labels:[], sentenceLabel:[], order:[], learned:new Set(), progress:{}, cut:3, subPct:0, struggleOnly:false, struggleN:1, selectedLabel:'', undoStack:[] }; buildLabelDropdown(); populateTextareaForLabel(''); render(); }
-  function checkOrder(){ const cards=$$('#sentences .card-sentence'); cards.forEach((card, pos)=>{ const idx=Number(card.dataset.idx); const ok=idx===pos; card.style.outline = ok? '2px solid rgba(34,197,94,.6)' : '2px solid rgba(239,68,68,.4)'; }); setTimeout(()=>{ cards.forEach(c=> c.style.outline=''); }, 1200); }
-  function copyCSV(){ const rows=[['index','sentence','label','cut','subPct','ok','bad','learned']]; state.sentences.forEach((s,i)=>{ const p=state.progress[i]||{ok:0,bad:0}; rows.push([i, s.replaceAll('\n',' '), state.sentenceLabel[i]||'', state.cut, state.subPct, p.ok, p.bad, state.learned.has(i)?1:0]); }); const csv=rows.map(r=> r.map(cell=> '"'+String(cell).replaceAll('"','""')+'"').join(',')).join('\n'); if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(csv).then(()=> alert('Progress copied to clipboard as CSV.')).catch(fallback);} else { fallback(); } function fallback(){ const ta=document.createElement('textarea'); ta.value=csv; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); alert('Progress copied to clipboard as CSV.'); }catch(e){ alert('Copy failed. Select text manually.'); } ta.remove(); } }
+  function checkOrder(){ const cards=$$('#sentences .card-sentence'); cards.forEach(function(card, pos){ const idx=Number(card.dataset.idx); const ok=idx===pos; card.style.outline = ok? '2px solid rgba(34,197,94,.6)' : '2px solid rgba(239,68,68,.4)'; }); setTimeout(function(){ cards.forEach(function(c){ c.style.outline=''; }); }, 1200); }
+  function copyCSV(){ const rows=[['index','sentence','label','cut','subPct','ok','bad','learned']]; state.sentences.forEach(function(s,i){ const p=state.progress[i]||{ok:0,bad:0}; rows.push([i, s.replace(/\n/g,' '), state.sentenceLabel[i]||'', state.cut, state.subPct, p.ok, p.bad, state.learned.has(i)?1:0]); }); const csv=rows.map(function(r){return r.map(function(cell){ return '"'+String(cell).replace(/\"/g,'\"\"')+'"'; }).join(',');}).join('\n'); if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(csv).then(function(){ alert('Progress copied to clipboard as CSV.'); }).catch(fallback);} else { fallback(); } function fallback(){ const ta=document.createElement('textarea'); ta.value=csv; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); alert('Progress copied to clipboard as CSV.'); }catch(e){ alert('Copy failed. Select text manually.'); } ta.remove(); } }
 
   // Import flow
-  $('#btnGenerate').addEventListener('click', ()=>{ const label=($('#labelInput').value||'').trim(); const t=($('#text').value||'').trim(); if(!label){ alert('Please enter a label for this import.'); return; } if(!t){ alert('Please paste some text.'); return; } const parts=splitSentences(t); if(!parts.length){ alert('No sentences found.'); return; } ensureLabel(label); const baseLen=state.sentences.length; for(const s of parts){ state.sentences.push(s); state.sentenceLabel.push(label); } state.order = state.order.concat(parts.map((_,i)=> baseLen + i)); state.selectedLabel=label; buildLabelDropdown(); render(); populateTextareaForLabel(label); });
+  $('#btnGenerate').addEventListener('click', function(){ const label=($('#labelInput').value||'').trim(); const t=($('#text').value||'').trim(); if(!label){ alert('Please enter a label for this import.'); return; } if(!t){ alert('Please paste some text.'); return; } const parts=splitSentences(t); if(!parts.length){ alert('No sentences found.'); return; } ensureLabel(label); const baseLen=state.sentences.length; for(const s of parts){ state.sentences.push(s); state.sentenceLabel.push(label); } state.order = state.order.concat(parts.map(function(_,i){return baseLen + i;})); state.selectedLabel=label; buildLabelDropdown(); render(); populateTextareaForLabel(label); });
 
   // Controls
-  $$('#inputCard input[name="cut"]').forEach(r=> r.addEventListener('change', ()=>{ state.cut=Number(document.querySelector('input[name="cut"]:checked').value); render(); }));
-  $$('#inputCard input[name="sub"]').forEach(r=> r.addEventListener('change', ()=>{ state.subPct=Number(document.querySelector('input[name="sub"]:checked').value); render(); }));
-  $('#btnScramble').addEventListener('click', ()=>{ const arr=state.order.slice(); for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } state.order=arr; render(); });
+  $$('#inputCard input[name="cut"]').forEach(function(r){ r.addEventListener('change', function(){ state.cut=Number(document.querySelector('input[name="cut"]:checked').value); render(); }); });
+  $$('#inputCard input[name="sub"]').forEach(function(r){ r.addEventListener('change', function(){ state.subPct=Number(document.querySelector('input[name="sub"]:checked').value); render(); }); });
+  $('#btnScramble').addEventListener('click', function(){ const arr=state.order.slice(); for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; } state.order=arr; render(); });
   $('#btnResetOrder').addEventListener('click', resetOrder);
   $('#btnResetCounts').addEventListener('click', resetCounts);
   $('#btnUnhideAll').addEventListener('click', unhideAll);
   $('#btnClearSession').addEventListener('click', clearSession);
   $('#btnCheckOrder').addEventListener('click', checkOrder);
   $('#btnExportCSV').addEventListener('click', copyCSV);
-  $('#labelFilter').addEventListener('change', (e)=>{ state.selectedLabel=e.target.value; render(); populateTextareaForLabel(state.selectedLabel); });
-  $('#toggleStruggle').addEventListener('change', (e)=>{ state.struggleOnly=e.target.checked; render(); });
-  $('#struggleN').addEventListener('change', (e)=>{ state.struggleN=clamp(parseInt(e.target.value||'1',10),1,999); render(); });
+  $('#labelFilter').addEventListener('change', function(e){ state.selectedLabel=e.target.value; render(); populateTextareaForLabel(state.selectedLabel); });
+  $('#toggleStruggle').addEventListener('change', function(e){ state.struggleOnly=e.target.checked; render(); });
+  $('#struggleN').addEventListener('change', function(e){ state.struggleN=clamp(parseInt(e.target.value||'1',10),1,999); render(); });
 
   // Boot
   (async function boot(){
     await load();
-    // Reflect persisted radios
-    if([1,2,3].includes(state.cut)){
-      const r = document.querySelector(`input[name="cut"][value="${state.cut}"]`); if(r) r.checked=true;
-    }
-    if([0,30,50,90].includes(state.subPct)){
-      const r2 = document.querySelector(`input[name="sub"][value="${state.subPct}"]`); if(r2) r2.checked=true;
-    }
+    if([1,2,3].indexOf(state.cut)>=0){ var r = document.querySelector('input[name="cut"][value="'+state.cut+'"]'); if(r) r.checked=true; }
+    if([0,30,50,90].indexOf(state.subPct)>=0){ var r2 = document.querySelector('input[name="sub"][value="'+state.subPct+'"]'); if(r2) r2.checked=true; }
     buildLabelDropdown();
     populateTextareaForLabel(state.selectedLabel);
     render();

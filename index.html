@@ -487,7 +487,32 @@
   function resetOrder(){ state.order=state.sentences.map(function(_,i){return i;}); render(); }
   function resetCounts(){ state.progress={}; render(); }
   async function unhideAll(){ state.learned=new Set(); render(); }
-  function checkOrder(){ const cards=$$('#sentences .card-sentence'); cards.forEach(function(card, pos){ const idx=Number(card.dataset.idx); const ok=idx===pos; card.style.outline = ok? '2px solid rgba(34,197,94,.6)' : '2px solid rgba(239,68,68,.4)'; }); setTimeout(function(){ cards.forEach(function(c){ c.style.outline=''; }); }, 1200); }
+
+  
+
+
+  function checkOrder() {
+  // Expected = natural ascending index of the CURRENTLY VISIBLE subset
+  // (selected label, not learned, and optional struggling filter).
+  const expected = state.sentences.map((_, i) => i)
+    .filter(i => state.selectedLabel && state.sentenceLabel[i] === state.selectedLabel && !state.learned.has(i))
+    .filter(i => !state.struggleOnly || (((state.progress[i]?.bad) || 0) >= state.struggleN))
+    .sort((a, b) => a - b);
+
+  const cards = $$('#sentences .card-sentence');
+  cards.forEach((card, pos) => {
+    const idx = Number(card.dataset.idx);
+    const ok = expected[pos] === idx;
+    card.style.outline = ok
+      ? '2px solid rgba(34,197,94,.6)'
+      : '2px solid rgba(239,68,68,.4)';
+  });
+  setTimeout(() => { cards.forEach(c => { c.style.outline = ''; }); }, 1200);
+}
+
+
+
+
   function copyCSV(){ const rows=[['index','sentence','label','cut','subPct','ok','bad','learned']]; state.sentences.forEach(function(s,i){ const p=state.progress[i]||{ok:0,bad:0}; rows.push([i, s.replace(/\n/g,' '), state.sentenceLabel[i]||'', state.cut, state.subPct, p.ok, p.bad, state.learned.has(i)?1:0]); }); const csv=rows.map(function(r){return r.map(function(cell){ return '"'+String(cell).replace(/\"/g,'\"\"')+'"'; }).join(',');}).join('\n'); if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(csv).then(function(){ alert('Progress copied to clipboard as CSV.'); }).catch(fallback);} else { fallback(); } function fallback(){ const ta=document.createElement('textarea'); ta.value=csv; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); alert('Progress copied to clipboard as CSV.'); }catch(e){ alert('Copy failed. Select text manually.'); } ta.remove(); } }
 
   function currentLabelCandidate(){ return state.newLabelMode ? (($('#labelInput').value)||'').trim() : (($('#labelFilter').value)||'').trim(); }

@@ -274,23 +274,25 @@
   function hash32(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h, 16777619);} return h>>>0; }
   function shouldMask(seed, wordIndex, pct){ if(pct<=0) return false; const h = hash32(seed+'#'+wordIndex); return (h % 100) < pct; }
 
+
   function splitSentences(text){
-  // Robust sentence splitting:
-  // - Treat *blank lines* as intentional separators.
-  // - Otherwise collapse single line breaks to spaces and split on . ! ?
-  // - No abbreviation guard (per your preference).
-  const norm = String(text||'').replace(/\r\n?/g,'\n').trim();
-  if(!norm) return [];
-  // If there are paragraph-style blank lines, use those as separators
-  if(/\n\s*\n/.test(norm)){
-    return norm.split(/\n\s*\n+/).map(s=>s.trim()).filter(Boolean);
-  }
-  // Collapse single newlines (common when copying wrapped text)
-  const collapsed = norm.replace(/\n+/g,' ');
-  // Split by terminal punctuation . ! ? (ignore commas)
-  const withBreaks = collapsed.replace(/([.!?])\s+/g,'$1\n');
-  return withBreaks.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-}
+    // No abbreviation guard (as requested).
+    // 1) If there are blank lines, use them as hard separators.
+    // 2) Otherwise collapse single \n to spaces and split on . ! ? …,
+    //    EVEN when followed by quotes/brackets or nothing (end of string).
+    const norm = String(text || '').replace(/\r\n?/g, '\n').trim();
+    if (!norm) return [];
+
+    if (/\n\s*\n/.test(norm)) {
+        return norm.split(/\n\s*\n+/).map(s => s.trim()).filter(Boolean);
+    }
+
+    const collapsed = norm.replace(/\n+/g, ' ');
+    // Add newline after punctuation (., !, ?, or ellipsis … \u2026)
+    // Allow trailing ) " ' ] } then optional spaces, or end-of-string.
+    const withBreaks = collapsed.replace(/([.!?\u2026])([)"'\]\}]*)\s*/g, '$1$2\n');
+    return withBreaks.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    }
 
 
   function applyCutAndSub(sentence, cutN, subPct, seed){

@@ -209,16 +209,14 @@
   })();
   const CS = (TG && TG.CloudStorage && TG_VER >= 6.9) ? TG.CloudStorage : null;
   const KEY_BASE = 'memoriser:v1';
+  const LEGACY_KEYS = ['mv7','memoriserv1','memoriser v1'];
   const CHUNK = 3500;
 
   const storage = {
-    // Write-through: always try localStorage; also try Telegram CloudStorage when available.
     async saveState(obj){
       const json = JSON.stringify(obj);
       let lsOK = false, csOK = false;
-      // LocalStorage first
       try { localStorage.setItem(KEY_BASE, json); lsOK = true; } catch(e){ console.warn('localStorage save failed', e); }
-      // Telegram CloudStorage
       if(CS){
         try{
           const parts = Math.ceil(json.length / CHUNK);
@@ -230,19 +228,13 @@
           }
           await Promise.all(promises);
           csOK = true;
-          try{
-            await new Promise(res=> { try{ CS.getKeys(function(keys){
-              (keys||[]).filter(function(k){ return k.indexOf(KEY_BASE+':')===0 && k.indexOf(':index')===-1 && Number(k.split(':').pop())>=parts; })
-                .forEach(function(k){ try{ CS.removeItem(k, function(){}); }catch(e){} });
-              res(true);
-            }); } catch(e){ res(false); } });
-          }catch(e){}
         }catch(err){ console.warn('CloudStorage save failed', err); }
       }
       try{ const note = document.getElementById('storageNote'); if(note){ note.textContent = 'Storage: '+(CS?('Telegram CloudStorage'+(csOK?' ✓':' ✕')):'Local storage')+'; Local '+(lsOK?'✓':'✕')+' at '+new Date().toLocaleTimeString(); } }catch(e){}
       return (lsOK || csOK);
     },
     async loadState(){
+      // CloudStorage first
       if(CS){
         try{
           const idxStr = await new Promise(res=> { try{ CS.getItem(KEY_BASE+':index', v=>res(v)); } catch(e){ res(null); } });
@@ -257,7 +249,25 @@
           }
         }catch(err){ console.warn('CloudStorage load failed', err); }
       }
-      try{ const raw = localStorage.getItem(KEY_BASE); return raw? JSON.parse(raw): null; }catch(e){ console.warn('localStorage load failed', e); return null; }
+      // LocalStorage current key
+      try{
+        const raw = localStorage.getItem(KEY_BASE);
+        if(raw){ return JSON.parse(raw); }
+      }catch(e){ console.warn('localStorage load (current) failed', e); }
+      // LocalStorage legacy keys migration
+      for(let i=0;i<LEGACY_KEYS.length;i++){
+        try{
+          const rawL = localStorage.getItem(LEGACY_KEYS[i]);
+          if(rawL){
+            try{
+              const parsedL = JSON.parse(rawL);
+              try{ localStorage.setItem(KEY_BASE, rawL); }catch(e){}
+              return parsedL;
+            }catch(parseErr){ console.warn('Legacy parse failed for', LEGACY_KEYS[i], parseErr); }
+          }
+        }catch(e){ /* continue */ }
+      }
+      return null;
     }
   };
 
@@ -341,7 +351,6 @@
     else {
       empty.style.display='block';
       empty.textContent = state.struggleOnly ? 'No cards match the current filter (Show only struggling). Try unchecking it or lowering the threshold.' : 'Choose a label above or import sentences to begin.';
-      // If user has chosen a label but filter hides all, auto-disable struggling-only once so they see cards
       if(state.selectedLabel && state.struggleOnly){ state.struggleOnly=false; const cb=$('#toggleStruggle'); if(cb) cb.checked=false; setTimeout(render,0); }
     }
 
@@ -490,7 +499,6 @@
     if(btn){ btn.disabled = dis; btn.title = dis ? 'Enter a label and paste text' : ''; }
   }
 
-  // Replace-on-Generate with graceful NEW→EXISTING fallback
   $('#btnGenerate').addEventListener('click', function(){
     var isNew = !!state.newLabelMode;
     var label = currentLabelCandidate();
@@ -606,25 +614,21 @@
         state.order = Array.isArray(p.order)? p.order : state.sentences.map(function(_,i){return i;});
         state.learned = new Set(p.learned||[]);
         state.progress = p.progress||{};
-        state.cut = [1,2,3].indexOf(p.cut)>=0? p.cut:3;
-        state.subPct = [0,30,50,90].indexOf(p.subPct)>=0? p.subPct:0;
-        state.struggleOnly = !!p.struggleOnly;
-        state.struggleN = (Number.isFinite && Number.isFinite(p.struggleN))? p.struggleN:1;
-        state.selectedLabel = p.selectedLabel || '';
       }catch(e){ console.warn('load parse failed', e); }
     }
-    if([1,2,3].indexOf(state.cut)>=0){ var r = document.querySelector('input[name="cut"][value="'+state.cut+'"]'); if(r) r.checked=true; }
-    if([0,30,50,90].indexOf(state.subPct)>=0){ var r2 = document.querySelector('input[name="sub"][value="'+state.subPct+'"]'); if(r2) r2.checked=true; }
+    if([1,2,3].indexOf((p&&p.cut)||state.cut)>=0){ state.cut = (p&&p.cut)||state.cut; var r = document.querySelector('input[name="cut"][value="'+state.cut+'"]'); if(r) r.checked=true; }
+    if([0,30,50,90].indexOf((p&&p.subPct)||state.subPct)>=0){ state.subPct = (p&&p.subPct)||state.subPct; var r2 = document.querySelector('input[name="sub"][value="'+state.subPct+'"]'); if(r2) r2.checked=true; }
+    state.struggleOnly = !!((p&&p.struggleOnly) || state.struggleOnly);
+    state.struggleN = (p && Number.isFinite && Number.isFinite(p.struggleN))? p.struggleN: state.struggleN;
+    state.selectedLabel = (p&&p.selectedLabel) || state.selectedLabel || '';
+
     buildLabelDropdown();
     populateTextareaForLabel(state.selectedLabel);
     setNewLabelMode(false);
     render();
     updateGenerateEnabled();
     var note = document.getElementById('storageNote');
-    if(note){
-      var mode = CS ? ('Telegram CloudStorage (v'+TG_VER.toFixed(1)+')') : 'Local storage on this device';
-      note.textContent = 'Storage: '+mode;
-    }
+    if(note){ var mode = CS ? ('Telegram CloudStorage (v'+TG_VER.toFixed(1)+')') : 'Local storage on this device'; note.textContent = 'Storage: '+mode; }
   })();
   </script>
 </body>
